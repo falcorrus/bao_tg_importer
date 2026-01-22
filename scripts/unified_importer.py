@@ -655,6 +655,25 @@ def main():
         print_info("РЕЗУЛЬТАТ ВЫПОЛНЕНИЯ:")
         print_info(json.dumps(result, indent=2, ensure_ascii=False))
         print_info("="*60)
+
+        # --- Логирование в файл log.md ---
+        try:
+            # Путь к log.md (на уровень выше от папки scripts)
+            log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'log.md')
+            
+            # Формируем строку: 2026-01-22 07:00 events_imported: 0
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+            events_count = result.get('events_imported', 0)
+            log_line = f"{timestamp} events_imported: {events_count}\n"
+            
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(log_line)
+            print_success(f"Запись добавлена в лог: {log_path}")
+            
+        except Exception as e:
+            print_error(f"Не удалось записать в log.md: {e}")
+        # ---------------------------------
+
         if sys.platform == 'darwin':
             events_imported = result.get('events_imported', 0)
             if events_imported > 0:
