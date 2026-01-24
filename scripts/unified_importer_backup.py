@@ -440,7 +440,8 @@ async def import_and_process_messages():
                                         photo_bytes = await client.download_media(msg.photo, file=bytes)
                                         if photo_bytes:
                                             bucket_name = 'events'
-                                            file_path = f"Script/{entity.id}/{msg.id}.jpg"
+                                            current_date = datetime.now().strftime('%Y-%m-%d')
+                                            file_path = f"{current_date}/{entity.id}/{msg.id}.jpg"
                                             storage_url = f"{config['supabase_url']}/storage/v1/object/{bucket_name}/{file_path}"
                                             storage_headers = {
                                                 'apikey': config['supabase_key'],
