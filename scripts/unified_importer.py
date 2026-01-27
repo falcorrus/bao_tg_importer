@@ -18,6 +18,7 @@ import subprocess
 
 from telethon.tl.functions.channels import GetForumTopicsRequest
 from telethon.tl.types import InputChannel
+from urllib.parse import quote
 
 # Global logger instance
 logger = None
@@ -178,6 +179,34 @@ def sanitize_data(ollama_data: dict) -> dict:
     
     return ollama_data
 
+def clean_markdown_html(text: str) -> str:
+    """Очищает текст от Markdown и HTML тегов."""
+    if not text:
+        return ""
+    
+    # 1. HTML теги
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # 2. Markdown ссылки [текст](ссылка) -> текст
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    
+    # 3. Жирный/Курсив (простой вариант)
+    # ***text*** -> text (редкий кейс, но бывает)
+    text = re.sub(r'\*\*\*(.*?)\*\*\*', r'\1', text)
+    text = re.sub(r'___(.*?)___', r'\1', text)
+    # **text** -> text
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    # *text* -> text
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    text = re.sub(r'_(.*?)_', r'\1', text)
+    
+    # 4. Моноширинный (код)
+    text = re.sub(r'`(.*?)`', r'\1', text)
+    text = re.sub(r'```(.*?)```', r'\1', text, flags=re.DOTALL)
+    
+    return text.strip()
+
 # --- Whitelists for Supabase Tables ---
 ALLOWED_EVENT_FIELDS = {
     'id', 'created_at', 'image', 'title', 'title_dop', 'description', 
@@ -200,6 +229,25 @@ ALLOWED_POST_FIELDS = {
 def filter_fields(data: dict, allowed_fields: set) -> dict:
     """Removes keys that are not in the allowed_fields set."""
     return {k: v for k, v in data.items() if k in allowed_fields}
+
+async def check_event_exists_in_db(http_client, config, title, when_day, headers):
+    """Checks if an event with the same title and date already exists in Supabase."""
+    if not title or not when_day:
+        return False
+        
+    try:
+        # Normalize title slightly if needed, but 'eq' is safest for now
+        encoded_title = quote(title)
+        # Using exact match for title and whenDay
+        url = f"{config['supabase_url']}/rest/v1/events?whenDay=eq.{when_day}&title=eq.{encoded_title}&select=id"
+        
+        resp = await http_client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        return len(data) > 0
+    except Exception as e:
+        print_error(f"    Ошибка при проверке дубликатов: {e}")
+        return False
 
 # --- Взаимодействие с Gemini ---
 async def process_message_with_gemini(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
@@ -493,12 +541,13 @@ async def import_and_process_messages():
                                             author_link = ""
 
                                     # Собираем финальный объект для вставки
+                                    cleaned_text = clean_markdown_html(msg.text)
                                     final_post_data = {
                                         **cleaned_data,
                                         'channel_name': f"@{entity.username}" if hasattr(entity, 'username') and entity.username else f"channel_{entity.id}",
                                         'message_id': msg.id,
-                                        'content': msg.text,
-                                        'description': msg.text, # Принудительно используем оригинал с переносами строк
+                                        'content': cleaned_text,
+                                        'description': cleaned_text, # Принудительно используем очищенный текст
                                         'posted_at': msg.date.isoformat(),
                                         'post_link': post_link,
                                         'raw_channel_id': entity.id,
@@ -576,7 +625,28 @@ async def import_and_process_messages():
                                         # Если картинки нет — удаляем ключ (для дефолта БД)
                                         if not event_entry.get('image'):
                                             event_entry.pop('image', None)
-                                            
+                                        
+                                        # --- DEDUPLICATION LOGIC START ---
+                                        current_title = event_entry.get('title')
+                                        current_day = event_entry.get('whenDay')
+
+                                        # A. Local Batch Deduplication
+                                        is_local_duplicate = False
+                                        for existing in events_to_insert:
+                                            if existing.get('title') == current_title and existing.get('whenDay') == current_day:
+                                                is_local_duplicate = True
+                                                break
+                                        
+                                        if is_local_duplicate:
+                                            print_info(f"    ⚠️ Пропуск локального дубликата: {current_title} ({current_day})")
+                                            continue
+
+                                        # B. Database Deduplication
+                                        if await check_event_exists_in_db(http_client, config, current_title, current_day, headers):
+                                            print_info(f"    ⚠️ Пропуск дубликата (найден в БД): {current_title} ({current_day})")
+                                            continue
+                                        # --- DEDUPLICATION LOGIC END ---
+
                                         events_to_insert.append(event_entry)
 
                                 if events_to_insert:
