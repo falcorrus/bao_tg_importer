@@ -82,19 +82,35 @@ def load_config():
         except FileNotFoundError:
             continue
 
+    channel_id_str = os.getenv('TELEGRAM_TARGET_CHANNEL_ID')
+    channel_name = os.getenv('TELEGRAM_TARGET_CHANNEL')
+
     config = {
-        'api_id': os.getenv('TELEGRAM_API_ID', '').strip(),
-        'api_hash': os.getenv('TELEGRAM_API_HASH', '').strip(),
-        'session_string': os.getenv('TELEGRAM_SESSION', '').strip(),
-        'supabase_url': os.getenv('MY_SUPABASE_URL', '').strip(),
-        'supabase_key': os.getenv('MY_SUPABASE_SERVICE_ROLE_KEY', '').strip(),
+        'api_id': os.getenv('TELEGRAM_API_ID'),
+        'api_hash': os.getenv('TELEGRAM_API_HASH'),
+        'session_string': os.getenv('TELEGRAM_SESSION'),
+        'supabase_url': os.getenv('MY_SUPABASE_URL'),
+        'supabase_key': os.getenv('MY_SUPABASE_SERVICE_ROLE_KEY'),
+        'target_channel': int(channel_id_str) if channel_id_str else None,
+        'channel_name': channel_name,
         'gemini_api_key': os.getenv('GEMINI_API_KEY', '').strip(),
-        'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash-lite-preview-02-05'),
-        'ollama_api_url': os.getenv('OLLAMA_API_URL', 'http://127.0.0.1:11434/api/generate'), # Keep for backward compat if needed, but not used
-        'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma3:latest')
+        'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'),
+        'check_interval': 300  # 5 минут
     }
 
-    missing = [key for key, value in config.items() if not value and key != 'ollama_api_url' and key != 'ollama_model']
+    # Проверка наличия обязательных переменных
+    missing = []
+    if not config['api_id']: missing.append('TELEGRAM_API_ID')
+    if not config['api_hash']: missing.append('TELEGRAM_API_HASH')
+    if not config['session_string']: missing.append('TELEGRAM_SESSION')
+    if not config['supabase_url']: missing.append('MY_SUPABASE_URL')
+    if not config['supabase_key']: missing.append('MY_SUPABASE_SERVICE_ROLE_KEY')
+    if not config['gemini_api_key']: missing.append('GEMINI_API_KEY')
+    
+    # target_channel и channel_name теперь опциональны, так как список каналов берется из Supabase
+    # if not config['target_channel'] and not config['channel_name']:
+    #     missing.append('TELEGRAM_TARGET_CHANNEL_ID or TELEGRAM_TARGET_CHANNEL')
+
     if missing:
         print_error(f"Отсутствуют следующие переменные: {', '.join(missing)}")
         return None
@@ -392,6 +408,32 @@ async def import_and_process_messages():
                     elif channel_name_lookup and channel_name_lookup.startswith('@'):
                         print_info(f"  Попытка получить канал по имени (без ID): {channel_name_lookup}")
                         entity = await client.get_entity(channel_name_lookup)
+                        
+                        # Автоматическое обновление channel_id, если он был найден
+                        if entity:
+                            try:
+                                # Формируем правильный ID (с префиксом -100 для каналов)
+                                new_channel_id = entity.id
+                                # Telethon часто возвращает ID без префикса -100 для каналов
+                                if not str(new_channel_id).startswith('-100'):
+                                    new_channel_id = int(f"-100{new_channel_id}")
+                                
+                                print_info(f"  ℹ️ Обнаружен отсутствующий channel_id. Сохраняем найденный ID: {new_channel_id}")
+                                
+                                row_id = channel.get('id')
+                                if row_id:
+                                    update_data = {'channel_id': new_channel_id}
+                                    update_response = await http_client.patch(
+                                        f"{config['supabase_url']}/rest/v1/channel_sync_state?id=eq.{row_id}",
+                                        headers=headers,
+                                        json=update_data
+                                    )
+                                    if update_response.status_code < 300:
+                                        print_success(f"  ✅ channel_id успешно обновлен в базе (ID строки: {row_id})")
+                                    else:
+                                        print_error(f"  ❌ Ошибка обновления channel_id в базе: {update_response.text}")
+                            except Exception as e:
+                                print_error(f"  ⚠️ Не удалось автоматически обновить channel_id: {e}")
                     
                     if entity is None:
                         print_error(f"  Ошибка: Невозможно получить сущность для канала {channel_name}. Проверьте channel_id и channel_name в channel_sync_state.")
