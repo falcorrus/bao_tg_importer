@@ -16,7 +16,7 @@ fi
 
 # 2. Remote Git Pull
 echo "🌍 Updating server (VPS)..."
-ssh vps "cd /root/scripts/bao_tg_importer && git pull && source venv/bin/activate && pip3 install -r requirements.txt"
+ssh -o StrictHostKeyChecking=no vps "cd /root/scripts/bao_tg_importer && git pull && source venv/bin/activate && pip3 install -r requirements.txt"
 
 if [ $? -eq 0 ]; then
     echo "✅ Deploy successful!"
