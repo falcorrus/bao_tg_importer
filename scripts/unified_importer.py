@@ -223,6 +223,30 @@ def clean_markdown_html(text: str) -> str:
     
     return text.strip()
 
+def normalize_text(text: str) -> str:
+    """Приводит текст в более удобный для LLM формат."""
+    if not text:
+        return ""
+    
+    # Словарь для замены месяцев в верхнем регистре на title case
+    month_map = {
+        'ЯНВАРЯ': 'января', 'ФЕВРАЛЯ': 'февраля', 'МАРТА': 'марта',
+        'АПРЕЛЯ': 'апреля', 'МАЯ': 'мая', 'ИЮНЯ': 'июня',
+        'ИЮЛЯ': 'июля', 'АВГУСТА': 'августа', 'СЕНТЯБРЯ': 'сентября',
+        'ОКТЯБРЯ': 'октября', 'НОЯБРЯ': 'ноября', 'ДЕКАБРЯ': 'декабря'
+    }
+    
+    # Заменяем месяцы, используя re.sub с функцией для независимости от регистра
+    def replace_month(match):
+        return month_map.get(match.group(0).upper(), match.group(0))
+
+    # Создаем паттерн (ЯНВАРЯ|ФЕВРАЛЯ|...|ДЕКАБРЯ)
+    month_pattern = re.compile('|'.join(month_map.keys()), re.IGNORECASE)
+    
+    text = month_pattern.sub(replace_month, text)
+    
+    return text
+
 # --- Whitelists for Supabase Tables ---
 ALLOWED_EVENT_FIELDS = {
     'id', 'created_at', 'image', 'title', 'title_dop', 'description', 
@@ -274,11 +298,14 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
         print_error("Шаблон промпта не загружен.")
         return None
 
+    # Нормализуем текст перед отправкой
+    normalized_content = normalize_text(content)
+
     # Форматируем дату сообщения для контекста
     context_date_str = message_date.strftime('%Y-%m-%d (%A)')
     
     # Добавляем контекст даты перед контентом сообщения
-    full_prompt_content = f"CURRENT CONTEXT DATE (Post Date): {context_date_str}\n\nMESSAGE CONTENT:\n{content}"
+    full_prompt_content = f"CURRENT CONTEXT DATE (Post Date): {context_date_str}\n\nMESSAGE CONTENT:\n{normalized_content}"
     
     # Configure Gemini
     genai.configure(api_key=config['gemini_api_key'])
@@ -525,7 +552,10 @@ async def import_and_process_messages():
                                 results_to_process = [ollama_data]
                             
                             for item in results_to_process:
-                                if item and item.get('is_event'):
+                                # Событие, если есть флаг is_event ИЛИ если есть хотя бы дата и заголовок (иногда нейронка забывает флаг в массиве)
+                                is_actually_event = item.get('is_event') or (item.get('whenDay') and item.get('title'))
+                                
+                                if item and is_actually_event:
                                     # Очистка и подготовка данных
                                     cleaned_data = sanitize_data(item)
 
