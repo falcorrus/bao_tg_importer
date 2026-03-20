@@ -14,12 +14,13 @@ send_tg_error() {
         -d text="${message}" > /dev/null
 }
 
+# Включаем строгий режим и обработку ошибок
+set -Eeuo pipefail
+trap 'send_tg_error "🚨 Ошибка в BAO Importer на VPS! Проверь логи: /root/scripts/bao_tg_importer/logs/cron.log"' ERR
+
 # Запуск импортера
 source venv/bin/activate
 python3 scripts/unified_importer.py
 
-# Проверка кода выхода
-if [ $? -ne 0 ]; then
-    echo "$(date): 🚨 ERROR detected in importer"
-    send_tg_error "🚨 Ошибка в BAO Importer на VPS! Проверь логи: /root/scripts/bao_tg_importer/logs/cron.log"
-fi
+# Дополнительно фиксируем успех в лог, если нужно (скрипт сам это делает, но для порядка)
+echo "$(date): ✅ Success" >> logs/cron.log
