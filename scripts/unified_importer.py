@@ -150,8 +150,11 @@ def send_telegram_notification(message):
             tg_config = secrets.get('telegram')
             if not tg_config:
                 return
+            
+            # Используем bao_bot для технических уведомлений, если он есть
+            token = tg_config.get('bao_bot', tg_config.get('token'))
                 
-        url = f"https://api.telegram.org/bot{tg_config['token']}/sendMessage"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             "chat_id": tg_config['chat_id'],
             "text": f"🤖 <b>BAO Importer Alert</b>\n\n{message}",
