@@ -310,6 +310,9 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
     # Configure Gemini
     genai.configure(api_key=config['gemini_api_key'])
     
+    model_name = config.get('gemini_model', 'gemini-2.0-flash')
+    print_info(f"  Использование модели Gemini: {model_name}")
+    
     generation_config = {
         "temperature": 0.1,
         "top_p": 0.95,
