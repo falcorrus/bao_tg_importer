@@ -536,13 +536,19 @@ async def import_and_process_messages():
                         print_success(f"  Найдено {len(current_messages)} новых сообщений в {topic_label}.")
                         
                         for msg in reversed(current_messages): # Обрабатываем в хронологическом порядке
-                            total_messages_processed += 1
-                            max_id_overall = max(max_id_overall, msg.id)
-
                             if not msg.text:
+                                total_messages_processed += 1
+                                max_id_overall = max(max_id_overall, msg.id)
                                 continue
 
                             ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
+                            
+                            if ollama_data is None:
+                                print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка из-за ошибки Gemini (вероятно 429).")
+                                break # Прекращаем обработку этого топика, чтобы не "проглотить" сообщения
+
+                            total_messages_processed += 1
+                            max_id_overall = max(max_id_overall, msg.id)
 
                             # --- Поддержка массива объектов или одиночного объекта ---
                             results_to_process = []
