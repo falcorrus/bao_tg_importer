@@ -155,12 +155,27 @@ def send_telegram_notification(message):
             token = tg_config.get('bao_bot', tg_config.get('token'))
                 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": tg_config['chat_id'],
-            "text": f"🤖 <b>BAO Importer Alert</b>\n\n{message}",
-            "parse_mode": "HTML"
-        }
-        requests.post(url, json=payload, timeout=10)
+        
+        # Получаем список chat_id (может быть строкой, числом или списком)
+        raw_chat_id = tg_config.get('chat_id')
+        chat_ids = []
+        if isinstance(raw_chat_id, list):
+            chat_ids = raw_chat_id
+        else:
+            chat_ids = [raw_chat_id]
+            
+        for cid in chat_ids:
+            if not cid: continue
+            payload = {
+                "chat_id": cid,
+                "text": f"🤖 <b>BAO Importer Alert</b>\n\n{message}",
+                "parse_mode": "HTML"
+            }
+            try:
+                requests.post(url, json=payload, timeout=10)
+            except Exception as e:
+                if logger:
+                    logger.error(f"Ошибка отправки уведомления в TG для {cid}: {e}")
     except Exception as e:
         if logger:
             logger.error(f"Ошибка отправки уведомления в TG: {e}")
