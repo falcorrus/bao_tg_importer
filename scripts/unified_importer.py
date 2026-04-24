@@ -134,6 +134,81 @@ def load_ollama_prompt():
         print_error("Файл unified_ollama_prompt.md не найден.")
         return None
 
+import requests
+
+# --- Уведомления в Telegram ---
+def send_telegram_notification(message):
+    """Отправляет уведомление в Telegram через бота из secrets.json"""
+    try:
+        secrets_path = os.path.expanduser('~/.gemini/configs/secrets.json')
+        if not os.path.exists(secrets_path):
+            # Fallback for local testing if needed
+            return
+            
+        with open(secrets_path, 'r') as f:
+            secrets = json.load(f)
+            tg_config = secrets.get('telegram')
+            if not tg_config:
+                return
+                
+        url = f"https://api.telegram.org/bot{tg_config['token']}/sendMessage"
+        payload = {
+            "chat_id": tg_config['chat_id'],
+            "text": f"🤖 <b>BAO Importer Alert</b>\n\n{message}",
+            "parse_mode": "HTML"
+        }
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        if logger:
+            logger.error(f"Ошибка отправки уведомления в TG: {e}")
+
+def check_persistent_429():
+    """Проверяет лог на наличие ошибок 429 в течение последних 2 часов"""
+    try:
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        log_file = os.path.join(log_dir, 'importer.log')
+        if not os.path.exists(log_file):
+            return
+
+        # Читаем последние 500 строк лога
+        with subprocess.Popen(['tail', '-n', '500', log_file], stdout=subprocess.PIPE) as proc:
+            lines = proc.stdout.read().decode('utf-8').splitlines()
+
+        current_time = datetime.now()
+        errors_429 = []
+
+        for line in lines:
+            if "Лимит (429)" in line or "error 429" in line.lower():
+                # Извлекаем дату (формат 2026-04-23 22:36:51,642)
+                match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', line)
+                if match:
+                    error_time = datetime.strptime(match.group(1), '%Y-%m-%d %H:%M:%S')
+                    # Если ошибка была в последние 2 часа
+                    if (current_time - error_time).total_seconds() < 7200:
+                        errors_429.append(error_time)
+
+        if not errors_429:
+            return
+
+        # Если ошибок много и они распределены по времени (минимум 1.5 часа разницы между первой и последней)
+        if len(errors_429) > 10:
+            time_diff = (max(errors_429) - min(errors_429)).total_seconds()
+            if time_diff > 5400: # 1.5 часа
+                # Проверяем, не отправляли ли мы уже уведомление недавно (чтобы не спамить)
+                # Это можно сделать через временный файл-флаг
+                flag_file = os.path.join(log_dir, 'notification_sent.flag')
+                if os.path.exists(flag_file):
+                    last_sent = datetime.fromtimestamp(os.path.getmtime(flag_file))
+                    if (current_time - last_sent).total_seconds() < 14400: # 4 часа
+                        return
+
+                send_telegram_notification(f"⚠️ Ошибки лимитов Gemini (429) продолжаются более 2 часов.\nПоследняя ошибка: {max(errors_429)}")
+                with open(flag_file, 'w') as f:
+                    f.write(current_time.isoformat())
+    except Exception as e:
+        if logger:
+            logger.error(f"Ошибка проверки 429: {e}")
+
 # --- Очистка данных ---
 def sanitize_data(ollama_data: dict) -> dict:
     """Приводит данные от Ollama в соответствие со схемой Supabase."""
@@ -825,6 +900,9 @@ def main():
         except Exception as e:
             print_error(f"Не удалось записать в log.md: {e}")
         # ---------------------------------
+
+        # Проверка на затяжные ошибки 429
+        check_persistent_429()
 
         if sys.platform == 'darwin':
             events_imported = result.get('events_imported', 0)
