@@ -95,6 +95,9 @@ def load_config():
         'channel_name': channel_name,
         'gemini_api_key': os.getenv('GEMINI_API_KEY', '').strip(),
         'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'),
+        'ollama_api_url': os.getenv('OLLAMA_API_URL', 'http://127.0.0.1:11434/api/generate'),
+        'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma3:latest'),
+        'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
         'check_interval': 300  # 5 минут
     }
 
@@ -105,7 +108,9 @@ def load_config():
     if not config['session_string']: missing.append('TELEGRAM_SESSION')
     if not config['supabase_url']: missing.append('MY_SUPABASE_URL')
     if not config['supabase_key']: missing.append('MY_SUPABASE_SERVICE_ROLE_KEY')
-    if not config['gemini_api_key']: missing.append('GEMINI_API_KEY')
+    
+    if not config['use_ollama'] and not config['gemini_api_key']:
+        missing.append('GEMINI_API_KEY (required if USE_OLLAMA is false)')
     
     # target_channel и channel_name теперь опциональны, так как список каналов берется из Supabase
     # if not config['target_channel'] and not config['channel_name']:
@@ -457,6 +462,61 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
     print_error("  Не удалось получить ответ от Gemini после нескольких попыток.")
     return None
 
+async def process_message_with_ollama(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
+    """
+    Анализирует сообщение с помощью Ollama, классифицирует его и извлекает JSON.
+    """
+    if not prompt_template:
+        print_error("Шаблон промпта не загружен.")
+        return None
+
+    # Нормализуем текст перед отправкой
+    normalized_content = normalize_text(content)
+
+    # Форматируем дату сообщения для контекста
+    context_date_str = message_date.strftime('%Y-%m-%d (%A)')
+
+    # Добавляем контекст даты перед контентом сообщения
+    full_prompt_content = f"CURRENT CONTEXT DATE (Post Date): {context_date_str}\n\nMESSAGE CONTENT:\n{normalized_content}"
+    
+    prompt = f"{prompt_template}\n\n{full_prompt_content}"
+    
+    ollama_url = config.get('ollama_api_url', 'http://127.0.0.1:11434/api/generate')
+    ollama_model = config.get('ollama_model', 'gemma3:latest')
+
+    async with httpx.AsyncClient() as client:
+        try:
+            print_info(f"  Отправка запроса в Ollama ({ollama_model})...")
+            response = await client.post(
+                ollama_url,
+                json={
+                    "model": ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json"
+                },
+                timeout=90.0
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if "response" in result:
+                try:
+                    data = json.loads(result["response"])
+                    print_success("  Ollama вернула валидный JSON.")
+                    return data
+                except json.JSONDecodeError as e:
+                    print_error(f"  Ошибка парсинга JSON от Ollama: {e}")
+                    print_error(f"  Полученный ответ: {result['response']}")
+                    return None
+            else:
+                print_error(f"  Неожиданный ответ от Ollama (нет поля 'response'): {result}")
+                return None
+            
+        except Exception as e:
+            print_error(f"  Ошибка при работе с Ollama: {e}")
+            return None
+
 # --- Основная логика импорта ---
 async def import_and_process_messages():
     """Основная функция импорта и обработки сообщений"""
@@ -637,10 +697,14 @@ async def import_and_process_messages():
                                 max_id_overall = max(max_id_overall, msg.id)
                                 continue
 
-                            ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
+                            if config.get('use_ollama'):
+                                ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
+                            else:
+                                ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
                             
                             if ollama_data is None:
-                                print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка из-за ошибки Gemini (вероятно 429).")
+                                error_source = "Ollama" if config.get('use_ollama') else "Gemini"
+                                print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка из-за ошибки {error_source}.")
                                 break # Прекращаем обработку этого топика, чтобы не "проглотить" сообщения
 
                             total_messages_processed += 1
@@ -878,7 +942,9 @@ async def import_and_process_messages():
             return result
     
     except Exception as e:
-        print_error(f"Критическая ошибка: {e}")
+        import traceback
+        error_msg = f"Критическая ошибка: {e}\n{traceback.format_exc()}"
+        print_error(error_msg)
         return None
     finally:
         await client.disconnect()
@@ -893,7 +959,12 @@ def main():
         print_error(f"Отсутствует необходимая библиотека: {e.name}. Установите ее: pip install telethon httpx")
         sys.exit(1)
 
-    result = asyncio.run(import_and_process_messages())
+    try:
+        result = asyncio.run(import_and_process_messages())
+    except Exception as e:
+        import traceback
+        print_error(f"Ошибка при запуске asyncio loop: {e}\n{traceback.format_exc()}")
+        result = None
     
     if result:
         print_info("\n" + "="*60)
