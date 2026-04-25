@@ -561,40 +561,59 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
     }
 
     async with httpx.AsyncClient() as client:
-        try:
-            print_info(f"  Отправка запроса в OpenRouter ({model})...")
-            response = await client.post(
-                api_url,
-                headers=headers,
-                json=payload,
-                timeout=90.0
-            )
-            response.raise_for_status()
-            result = response.json()
-            
-            if "choices" in result and len(result["choices"]) > 0:
-                try:
-                    content_str = result["choices"][0]["message"]["content"]
-                    # OpenRouter иногда возвращает JSON в markdown блоках
-                    if "```json" in content_str:
-                        content_str = content_str.split("```json")[1].split("```")[0].strip()
-                    elif "```" in content_str:
-                        content_str = content_str.split("```")[1].split("```")[0].strip()
-                    
-                    data = json.loads(content_str)
-                    print_success("  OpenRouter вернула валидный JSON.")
-                    return data
-                except (json.JSONDecodeError, KeyError) as e:
-                    print_error(f"  Ошибка парсинга JSON от OpenRouter: {e}")
-                    print_error(f"  Полученный ответ: {result['choices'][0]['message']['content']}")
+        max_retries = 3
+        base_delay = 5  # секунд между попытками при 429
+        
+        for attempt in range(max_retries):
+            try:
+                print_info(f"  Отправка запроса в OpenRouter ({model}) (попытка {attempt + 1})...")
+                response = await client.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=90.0
+                )
+                
+                if response.status_code == 429:
+                    if attempt < max_retries - 1:
+                        wait_time = base_delay * (attempt + 1)
+                        print_info(f"  ⚠️ OpenRouter лимит (429). Ждем {wait_time} сек...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        print_error("  🛑 OpenRouter лимит (429) превышен после всех попыток.")
+                        return None
+
+                response.raise_for_status()
+                result = response.json()
+                
+                if "choices" in result and len(result["choices"]) > 0:
+                    try:
+                        content_str = result["choices"][0]["message"]["content"]
+                        # OpenRouter иногда возвращает JSON в markdown блоках
+                        if "```json" in content_str:
+                            content_str = content_str.split("```json")[1].split("```")[0].strip()
+                        elif "```" in content_str:
+                            content_str = content_str.split("```")[1].split("```")[0].strip()
+                        
+                        data = json.loads(content_str)
+                        print_success("  OpenRouter вернула валидный JSON.")
+                        # Небольшая пауза после успеха, чтобы не спамить бесплатный API
+                        await asyncio.sleep(1)
+                        return data
+                    except (json.JSONDecodeError, KeyError) as e:
+                        print_error(f"  Ошибка парсинга JSON от OpenRouter: {e}")
+                        print_error(f"  Полученный ответ: {result['choices'][0]['message']['content']}")
+                        return None
+                else:
+                    print_error(f"  Неожиданный ответ от OpenRouter: {result}")
                     return None
-            else:
-                print_error(f"  Неожиданный ответ от OpenRouter: {result}")
+                
+            except Exception as e:
+                print_error(f"  Ошибка при работе с OpenRouter: {e}")
                 return None
-            
-        except Exception as e:
-            print_error(f"  Ошибка при работе с OpenRouter: {e}")
-            return None
+        
+        return None
 
 # --- Основная логика импорта ---
 async def import_and_process_messages():
