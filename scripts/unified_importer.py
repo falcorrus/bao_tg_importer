@@ -99,7 +99,7 @@ def load_config():
         'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma3:latest'),
         'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
         'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', '').strip(),
-        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-2-9b-it:free'),
+        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-4-26b-a4b-it:free'),
         'use_openrouter': os.getenv('USE_OPENROUTER', 'false').lower() == 'true',
         'check_interval': 300  # 5 минут
     }
@@ -542,7 +542,7 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
     
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     api_key = config.get('openrouter_api_key')
-    model = config.get('openrouter_model', 'google/gemma-2-9b-it:free')
+    model = config.get('openrouter_model', 'google/gemma-4-26b-a4b-it:free')
 
     headers = {
         "Authorization": f"Bearer {api_key}",
