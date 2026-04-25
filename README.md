@@ -23,6 +23,12 @@
    ./deploy.sh (в CLI скажи "деплой")
    ```
 
+### 🔑 Настройка ИИ (OpenRouter)
+Если вы хотите использовать бесплатные модели через OpenRouter (например, Gemma 4):
+1. В файле `.env` установите `USE_OPENROUTER=true`.
+2. Добавьте ваш API ключ: `OPENROUTER_API_KEY=your_key_here`.
+3. (Опционально) Укажите модель: `OPENROUTER_MODEL=google/gemma-4-26b-a4b-it:free`.
+
 **Схема деплоя:**
 1. **Local → GitHub:** Скрипт делает коммит и пуш (`git push`) в репозиторий.
 2. **SSH Trigger:** Подключается к VPS и дает команду на обновление.
