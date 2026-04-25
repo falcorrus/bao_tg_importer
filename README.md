@@ -1,6 +1,6 @@
 # Telegram to Supabase Importer (Unified)
 
-Проект для автоматического сбора, классификации и структурирования событий из Telegram-каналов с использованием **Google Gemini 2.0 Flash Lite** (AI) и Supabase.
+Проект для автоматического сбора, классификации и структурирования событий из Telegram-каналов с использованием **Google Gemini 2.0 Flash Lite**, **OpenRouter** или **Ollama** (локально) и Supabase.
 
 ## 🚀 Deployment (VPS)
 Проект развернут на сервере `server.reloto.ru` (148.230.107.136).
@@ -47,7 +47,7 @@
 
 ## Основные возможности
 - **Unified Prompt:** Все скрипты используют единую инструкцию для ИИ (`!Промты/unified_ollama_prompt.md`).
-- **Google Gemini:** Интеграция с Google Gemini для обработки текста.
+- **Multi-LLM Support:** Поддержка Google Gemini, OpenRouter (включая бесплатные модели) и локальной Ollama.
 - **Multi-Event Support:** Если в одном сообщении Telegram указано несколько дат (до 3-х), система создаст отдельную запись в базе данных для каждого события.
 - **Автоматическая загрузка фото:** Изображения из постов загружаются в Supabase Storage (бакет `events`).
 - **Интеллектуальная обработка:** Извлечение названия, описания, даты, времени, места, цены и категории.
@@ -92,4 +92,4 @@ python3 scripts/get_channel_id.py
 - Python 3.10+
 - Telethon, httpx, google-generativeai
 - Supabase проект с таблицами `posts` и `channel_sync_state`.
-- Переменные окружения: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION`, `MY_SUPABASE_URL`, `MY_SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`.
+- Переменные окружения: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION`, `MY_SUPABASE_URL`, `MY_SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `USE_OPENROUTER`, `USE_OLLAMA`.

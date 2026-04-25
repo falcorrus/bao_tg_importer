@@ -98,6 +98,9 @@ def load_config():
         'ollama_api_url': os.getenv('OLLAMA_API_URL', 'http://127.0.0.1:11434/api/generate'),
         'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma3:latest'),
         'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
+        'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', '').strip(),
+        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-2-9b-it:free'),
+        'use_openrouter': os.getenv('USE_OPENROUTER', 'false').lower() == 'true',
         'check_interval': 300  # 5 минут
     }
 
@@ -109,8 +112,11 @@ def load_config():
     if not config['supabase_url']: missing.append('MY_SUPABASE_URL')
     if not config['supabase_key']: missing.append('MY_SUPABASE_SERVICE_ROLE_KEY')
     
-    if not config['use_ollama'] and not config['gemini_api_key']:
-        missing.append('GEMINI_API_KEY (required if USE_OLLAMA is false)')
+    if not config['use_ollama'] and not config['use_openrouter'] and not config['gemini_api_key']:
+        missing.append('GEMINI_API_KEY (required if USE_OLLAMA and USE_OPENROUTER are false)')
+    
+    if config['use_openrouter'] and not config['openrouter_api_key']:
+        missing.append('OPENROUTER_API_KEY (required if USE_OPENROUTER is true)')
     
     # target_channel и channel_name теперь опциональны, так как список каналов берется из Supabase
     # if not config['target_channel'] and not config['channel_name']:
@@ -517,6 +523,79 @@ async def process_message_with_ollama(content: str, config: dict, prompt_templat
             print_error(f"  Ошибка при работе с Ollama: {e}")
             return None
 
+async def process_message_with_openrouter(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
+    """
+    Анализирует сообщение с помощью OpenRouter, классифицирует его и извлекает JSON.
+    """
+    if not prompt_template:
+        print_error("Шаблон промпта не загружен.")
+        return None
+
+    # Нормализуем текст перед отправкой
+    normalized_content = normalize_text(content)
+
+    # Форматируем дату сообщения для контекста
+    context_date_str = message_date.strftime('%Y-%m-%d (%A)')
+
+    # Добавляем контекст даты перед контентом сообщения
+    full_prompt_content = f"CURRENT CONTEXT DATE (Post Date): {context_date_str}\n\nMESSAGE CONTENT:\n{normalized_content}"
+    
+    api_url = "https://openrouter.ai/api/v1/chat/completions"
+    api_key = config.get('openrouter_api_key')
+    model = config.get('openrouter_model', 'google/gemma-2-9b-it:free')
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://github.com/falcorrus/bao_tg_importer",
+        "X-Title": "BAO TG Importer",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": prompt_template},
+            {"role": "user", "content": full_prompt_content}
+        ],
+        "response_format": {"type": "json_object"}
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            print_info(f"  Отправка запроса в OpenRouter ({model})...")
+            response = await client.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=90.0
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if "choices" in result and len(result["choices"]) > 0:
+                try:
+                    content_str = result["choices"][0]["message"]["content"]
+                    # OpenRouter иногда возвращает JSON в markdown блоках
+                    if "```json" in content_str:
+                        content_str = content_str.split("```json")[1].split("```")[0].strip()
+                    elif "```" in content_str:
+                        content_str = content_str.split("```")[1].split("```")[0].strip()
+                    
+                    data = json.loads(content_str)
+                    print_success("  OpenRouter вернула валидный JSON.")
+                    return data
+                except (json.JSONDecodeError, KeyError) as e:
+                    print_error(f"  Ошибка парсинга JSON от OpenRouter: {e}")
+                    print_error(f"  Полученный ответ: {result['choices'][0]['message']['content']}")
+                    return None
+            else:
+                print_error(f"  Неожиданный ответ от OpenRouter: {result}")
+                return None
+            
+        except Exception as e:
+            print_error(f"  Ошибка при работе с OpenRouter: {e}")
+            return None
+
 # --- Основная логика импорта ---
 async def import_and_process_messages():
     """Основная функция импорта и обработки сообщений"""
@@ -699,11 +778,18 @@ async def import_and_process_messages():
 
                             if config.get('use_ollama'):
                                 ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
+                            elif config.get('use_openrouter'):
+                                ollama_data = await process_message_with_openrouter(msg.text, config, prompt_template, msg.date)
                             else:
                                 ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
                             
                             if ollama_data is None:
-                                error_source = "Ollama" if config.get('use_ollama') else "Gemini"
+                                if config.get('use_ollama'):
+                                    error_source = "Ollama"
+                                elif config.get('use_openrouter'):
+                                    error_source = "OpenRouter"
+                                else:
+                                    error_source = "Gemini"
                                 print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка из-за ошибки {error_source}.")
                                 break # Прекращаем обработку этого топика, чтобы не "проглотить" сообщения
 
