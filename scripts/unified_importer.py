@@ -98,7 +98,7 @@ def load_config():
         'gemini_api_key': os.getenv('GEMINI_API_KEY', '').strip(),
         'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'),
         'ollama_api_url': os.getenv('OLLAMA_API_URL', 'http://127.0.0.1:11434/api/generate'),
-        'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma4:31b'),
+        'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma4:e4b'),
         'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
         'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', '').strip(),
         'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-4-26b-a4b-it:free'),
@@ -513,7 +513,7 @@ async def process_message_with_ollama(content: str, config: dict, prompt_templat
     prompt = f"{prompt_template}\n\n{full_prompt_content}"
     
     ollama_url = config.get('ollama_api_url', 'http://127.0.0.1:11434/api/generate')
-    ollama_model = config.get('ollama_model', 'gemma4:31b')
+    ollama_model = config.get('ollama_model', 'gemma4:e4b')
 
     async with httpx.AsyncClient() as client:
         try:
