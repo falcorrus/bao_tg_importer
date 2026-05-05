@@ -7,11 +7,13 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 import asyncio
 import os
+import re
+import difflib
 import json
 from datetime import datetime
 import httpx
 import sys
-import re
+import argparse
 from typing import Optional
 import logging
 import subprocess
@@ -96,7 +98,7 @@ def load_config():
         'gemini_api_key': os.getenv('GEMINI_API_KEY', '').strip(),
         'gemini_model': os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'),
         'ollama_api_url': os.getenv('OLLAMA_API_URL', 'http://127.0.0.1:11434/api/generate'),
-        'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma3:latest'),
+        'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma4:31b'),
         'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
         'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', '').strip(),
         'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-4-26b-a4b-it:free'),
@@ -374,21 +376,44 @@ def filter_fields(data: dict, allowed_fields: set) -> dict:
     """Removes keys that are not in the allowed_fields set."""
     return {k: v for k, v in data.items() if k in allowed_fields}
 
+def normalize_title_for_compare(title: str) -> str:
+    """Lowercases the text and removes punctuation, emojis, and extra whitespace."""
+    if not title:
+        return ""
+    # Remove everything except alphanumeric and spaces (Russian and English)
+    cleaned = re.sub(r'[^\w\sа-яА-Яa-zA-Z0-9]', ' ', title.lower())
+    # Collapse multiple spaces
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
+def is_similar_title(t1: str, t2: str, threshold: float = 0.8) -> bool:
+    """Checks if two titles are similar using fuzzy matching."""
+    if not t1 or not t2:
+        return False
+    norm1 = normalize_title_for_compare(t1)
+    norm2 = normalize_title_for_compare(t2)
+    
+    if norm1 == norm2:
+        return True
+        
+    return difflib.SequenceMatcher(None, norm1, norm2).ratio() >= threshold
+
 async def check_event_exists_in_db(http_client, config, title, when_day, headers):
-    """Checks if an event with the same title and date already exists in Supabase."""
+    """Checks if an event with a similar title and same date already exists in Supabase."""
     if not title or not when_day:
         return False
         
     try:
-        # Normalize title slightly if needed, but 'eq' is safest for now
-        encoded_title = quote(title)
-        # Using exact match for title and whenDay
-        url = f"{config['supabase_url']}/rest/v1/events?whenDay=eq.{when_day}&title=eq.{encoded_title}&select=id"
+        # Fetch all events for that day to perform local fuzzy matching
+        url = f"{config['supabase_url']}/rest/v1/events?whenDay=eq.{when_day}&select=title"
         
         resp = await http_client.get(url, headers=headers)
         resp.raise_for_status()
-        data = resp.json()
-        return len(data) > 0
+        existing_events = resp.json()
+        
+        for event in existing_events:
+            if is_similar_title(title, event.get('title')):
+                return True
+        return False
     except Exception as e:
         print_error(f"    Ошибка при проверке дубликатов: {e}")
         return False
@@ -488,7 +513,7 @@ async def process_message_with_ollama(content: str, config: dict, prompt_templat
     prompt = f"{prompt_template}\n\n{full_prompt_content}"
     
     ollama_url = config.get('ollama_api_url', 'http://127.0.0.1:11434/api/generate')
-    ollama_model = config.get('ollama_model', 'gemma3:latest')
+    ollama_model = config.get('ollama_model', 'gemma4:31b')
 
     async with httpx.AsyncClient() as client:
         try:
@@ -614,6 +639,162 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                 return None
         
         return None
+
+def parse_tg_link(link: str):
+    """Парсит ссылку на сообщение Telegram."""
+    # Регулярка для публичных ссылок: t.me/channel/msg_id или t.me/channel/thread/msg_id
+    public_match = re.search(r't\.me/([^/]+)/(\d+)(?:/(\d+))?', link)
+    # Регулярка для приватных ссылок: t.me/c/id/msg_id
+    private_match = re.search(r't\.me/c/(\d+)/(\d+)', link)
+    
+    if private_match:
+        return f"-100{private_match.group(1)}", int(private_match.group(2))
+    if public_match:
+        channel = public_match.group(1)
+        # Если 3 группы, то вторая - это thread_id, третья - msg_id
+        if public_match.group(3):
+            return channel, int(public_match.group(3))
+        return channel, int(public_match.group(2))
+    return None, None
+
+async def import_single_link(link: str):
+    """Импортирует одно конкретное сообщение по ссылке."""
+    config = load_config()
+    if not config: return None
+    
+    prompt_template = load_ollama_prompt()
+    if not prompt_template: return None
+
+    channel_handle, message_id = parse_tg_link(link)
+    if not channel_handle or not message_id:
+        print_error(f"Не удалось распарсить ссылку: {link}")
+        return None
+
+    print_info(f"Подключение к Telegram для импорта сообщения {message_id} из {channel_handle}...")
+    client = TelegramClient(StringSession(config['session_string']), config['api_id'], config['api_hash'])
+    await client.connect()
+    
+    try:
+        entity = await client.get_entity(channel_handle)
+        msg = await client.get_messages(entity, ids=message_id)
+        
+        if not msg or not msg.text:
+            print_error("Сообщение не найдено или пустое.")
+            return None
+
+        async with httpx.AsyncClient() as http_client:
+            headers = {
+                'apikey': config['supabase_key'],
+                'Authorization': f"Bearer {config['supabase_key']}",
+                'Content-Type': 'application/json'
+            }
+            
+            # Пытаемся найти настройки города для этого канала в базе
+            city_id = 1 # Дефолт
+            try:
+                # Пытаемся найти по channel_id или channel_name
+                search_val = entity.id
+                if not str(search_val).startswith('-100'):
+                    search_val = int(f"-100{search_val}")
+                
+                resp = await http_client.get(
+                    f"{config['supabase_url']}/rest/v1/channel_sync_state?channel_id=eq.{search_val}&select=City",
+                    headers=headers
+                )
+                if resp.status_code == 200 and resp.json():
+                    city_id = resp.json()[0].get('City', 1)
+            except: pass
+
+            # Обработка через LLM
+            if config.get('use_ollama'):
+                ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
+            else:
+                ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
+                if ollama_data is None:
+                    ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
+
+            if not ollama_data:
+                print_error("LLM не смогла обработать сообщение.")
+                return None
+
+            # Подготовка к вставке
+            results_to_process = [ollama_data] if isinstance(ollama_data, dict) else ollama_data
+            total_events_imported = 0
+            posts_to_insert = []
+
+            for item in results_to_process:
+                is_actually_event = item.get('is_event') or (item.get('whenDay') and item.get('title'))
+                if not item or not is_actually_event: continue
+                
+                cleaned_data = sanitize_data(item)
+                when_day = cleaned_data.get('whenDay')
+                if not when_day: continue
+
+                image_url = None
+                if msg.photo:
+                    print_info(f"    Загрузка изображения...")
+                    photo_bytes = await client.download_media(msg.photo, file=bytes)
+                    if photo_bytes:
+                        file_path = f"{datetime.now().strftime('%Y-%m-%d')}/{entity.id}/{msg.id}.jpg"
+                        storage_url = f"{config['supabase_url']}/storage/v1/object/events/{file_path}"
+                        try:
+                            up_resp = await http_client.put(storage_url, headers={**headers, 'Content-Type': 'image/jpeg'}, content=photo_bytes)
+                            up_resp.raise_for_status()
+                            image_url = f"{config['supabase_url']}/storage/v1/object/public/events/{file_path}"
+                        except Exception as e: print_error(f"Ошибка загрузки фото: {e}")
+
+                cleaned_text = clean_markdown_html(msg.text)
+                final_post_data = {
+                    **cleaned_data,
+                    'channel_name': f"@{entity.username}" if hasattr(entity, 'username') and entity.username else f"channel_{entity.id}",
+                    'message_id': msg.id,
+                    'content': cleaned_text,
+                    'description': cleaned_text,
+                    'posted_at': msg.date.isoformat(),
+                    'post_link': link,
+                    'raw_channel_id': entity.id,
+                    'is_event_filtered': True,
+                    'author_username': msg.sender.username if msg.sender and hasattr(msg.sender, 'username') else "",
+                    'city': city_id
+                }
+                if image_url: final_post_data['image'] = image_url
+                if not final_post_data.get('link_contact'):
+                    final_post_data['link_contact'] = final_post_data['author_username']
+                
+                posts_to_insert.append(sanitize_data(final_post_data))
+
+            # Вставка в БД
+            if posts_to_insert:
+                # Только в events для ручного импорта, если не просили иное, 
+                # но для консистентности добавим и в posts если city != 1
+                for p in posts_to_insert:
+                    if p.get('city') != 1:
+                        p_log = filter_fields(p, ALLOWED_POST_FIELDS)
+                        await http_client.post(f"{config['supabase_url']}/rest/v1/posts", headers=headers, json=p_log)
+                    
+                    event_entry = p.copy()
+                    event_entry['isAuto'] = True
+                    event_entry['author'] = '666408b4-1566-447b-a36c-0e36c9ebc96d'
+                    if not event_entry.get('description'): event_entry['description'] = p.get('content')
+                    
+                    # Проверка дубликатов
+                    if await check_event_exists_in_db(http_client, config, event_entry['title'], event_entry['whenDay'], headers):
+                        print_info(f"    ⚠️ Пропуск дубликата в БД: {event_entry['title']}")
+                        continue
+                        
+                    event_entry = filter_fields(event_entry, ALLOWED_EVENT_FIELDS)
+                    resp = await http_client.post(f"{config['supabase_url']}/rest/v1/events", headers=headers, json=event_entry)
+                    if resp.status_code < 300: total_events_imported += 1
+                
+                return {'status': 'success', 'events_imported': total_events_imported}
+            
+            return {'status': 'success', 'events_imported': 0}
+
+    except Exception as e:
+        print_error(f"Ошибка ручного импорта: {e}")
+        return None
+    finally:
+        await client.disconnect()
 
 # --- Основная логика импорта ---
 async def import_and_process_messages():
@@ -800,16 +981,16 @@ async def import_and_process_messages():
                             elif config.get('use_openrouter'):
                                 ollama_data = await process_message_with_openrouter(msg.text, config, prompt_template, msg.date)
                             else:
+                                # Основной: Gemini
                                 ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
+                                
+                                # Fallback на локальный Ollama, если Gemini не вернула результат
+                                if ollama_data is None:
+                                    print_info("  ⚠️ Gemini не сработала. Пробуем локальный Ollama (fallback)...")
+                                    ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
                             
                             if ollama_data is None:
-                                if config.get('use_ollama'):
-                                    error_source = "Ollama"
-                                elif config.get('use_openrouter'):
-                                    error_source = "OpenRouter"
-                                else:
-                                    error_source = "Gemini"
-                                print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка из-за ошибки {error_source}.")
+                                print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка: LLM не вернула результат.")
                                 break # Прекращаем обработку этого топика, чтобы не "проглотить" сообщения
 
                             total_messages_processed += 1
@@ -976,7 +1157,7 @@ async def import_and_process_messages():
                                         # A. Local Batch Deduplication
                                         is_local_duplicate = False
                                         for existing in events_to_insert:
-                                            if existing.get('title') == current_title and existing.get('whenDay') == current_day:
+                                            if existing.get('whenDay') == current_day and is_similar_title(current_title, existing.get('title')):
                                                 is_local_duplicate = True
                                                 break
                                         
@@ -1056,20 +1237,31 @@ async def import_and_process_messages():
         print_info("Отключились от Telegram.")
 
 def main():
-    setup_logging() # Call setup_logging here
+    setup_logging()
     print_header()
+    
+    parser = argparse.ArgumentParser(description="Unified Telegram to Supabase Importer")
+    parser.add_argument('--link', type=str, help='Telegram link to import a single message')
+    parser.add_argument('--all', action='store_true', help='Process all channels (default behavior)')
+    args = parser.parse_args()
+
     try:
         import telethon, httpx
     except ImportError as e:
         print_error(f"Отсутствует необходимая библиотека: {e.name}. Установите ее: pip install telethon httpx")
         sys.exit(1)
 
-    try:
-        result = asyncio.run(import_and_process_messages())
-    except Exception as e:
-        import traceback
-        print_error(f"Ошибка при запуске asyncio loop: {e}\n{traceback.format_exc()}")
-        result = None
+    if args.link:
+        print_info(f"Запуск импорта по ссылке: {args.link}")
+        result = asyncio.run(import_single_link(args.link))
+    else:
+        # По умолчанию запускаем полный импорт
+        try:
+            result = asyncio.run(import_and_process_messages())
+        except Exception as e:
+            import traceback
+            print_error(f"Ошибка при запуске asyncio loop: {e}\n{traceback.format_exc()}")
+            result = None
     
     if result:
         print_info("\n" + "="*60)
