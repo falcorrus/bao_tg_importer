@@ -10,6 +10,7 @@ import os
 import re
 import difflib
 import json
+import base64
 from datetime import datetime
 import httpx
 import sys
@@ -300,6 +301,47 @@ def sanitize_data(ollama_data: dict) -> dict:
         ollama_data['link_map'] = ollama_data['link_map'].replace(' ', '+')
     
     return ollama_data
+
+async def generate_image_with_gemini(prompt: str, api_key: str, http_client: httpx.AsyncClient) -> Optional[bytes]:
+    """Генерирует изображение через Gemini API (Imagen 3)."""
+    if not api_key:
+        return None
+        
+    try:
+        # Очистка промпта
+        safe_prompt = prompt[:1000].replace('\n', ' ').strip()
+        if not safe_prompt:
+            return None
+            
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={api_key}"
+        
+        payload = {
+            "instances": [
+                {"prompt": f"Photorealistic high-quality image for an event: {safe_prompt}"}
+            ],
+            "parameters": {
+                "sampleCount": 1,
+                "aspectRatio": "1:1"
+            }
+        }
+        
+        # print_info(f"      Отправка запроса в Gemini на генерацию фото: {safe_prompt[:50]}...")
+        resp = await http_client.post(url, json=payload, timeout=60.0)
+        
+        if resp.status_code != 200:
+            print_error(f"      Ошибка Gemini Image API ({resp.status_code}): {resp.text}")
+            return None
+            
+        data = resp.json()
+        if 'predictions' in data and data['predictions']:
+            img_b64 = data['predictions'][0].get('bytesBase64Encoded')
+            if img_b64:
+                return base64.b64decode(img_b64)
+                
+    except Exception as e:
+        print_error(f"      Исключение при генерации фото: {e}")
+        
+    return None
 
 def clean_markdown_html(text: str) -> str:
     """Очищает текст от Markdown и HTML тегов."""
@@ -731,17 +773,25 @@ async def import_single_link(link: str):
                 if not when_day: continue
 
                 image_url = None
+                photo_bytes = None
                 if msg.photo:
                     print_info(f"    Загрузка изображения...")
                     photo_bytes = await client.download_media(msg.photo, file=bytes)
-                    if photo_bytes:
-                        file_path = f"{datetime.now().strftime('%Y-%m-%d')}/{entity.id}/{msg.id}.jpg"
-                        storage_url = f"{config['supabase_url']}/storage/v1/object/events/{file_path}"
-                        try:
-                            up_resp = await http_client.put(storage_url, headers={**headers, 'Content-Type': 'image/jpeg'}, content=photo_bytes)
-                            up_resp.raise_for_status()
-                            image_url = f"{config['supabase_url']}/storage/v1/object/public/events/{file_path}"
-                        except Exception as e: print_error(f"Ошибка загрузки фото: {e}")
+                else:
+                    print_info(f"    Изображение отсутствует, генерируем через Gemini...")
+                    img_prompt = msg.text if msg.text else "Интересное мероприятие"
+                    photo_bytes = await generate_image_with_gemini(img_prompt, config.get('gemini_api_key'), http_client)
+
+                if photo_bytes:
+                    file_path = f"{datetime.now().strftime('%Y-%m-%d')}/{entity.id}/{msg.id}.jpg"
+                    storage_url = f"{config['supabase_url']}/storage/v1/object/events/{file_path}"
+                    try:
+                        up_resp = await http_client.put(storage_url, headers={**headers, 'Content-Type': 'image/jpeg'}, content=photo_bytes)
+                        up_resp.raise_for_status()
+                        image_url = f"{config['supabase_url']}/storage/v1/object/public/events/{file_path}"
+                        if not msg.photo:
+                            print_success(f"    Изображение успешно сгенерировано и загружено: {image_url}")
+                    except Exception as e: print_error(f"Ошибка загрузки фото: {e}")
 
                 cleaned_text = clean_markdown_html(msg.text)
                 final_post_data = {
@@ -1022,27 +1072,33 @@ async def import_and_process_messages():
                                         total_events_imported += 1
 
                                     image_url = None
+                                    photo_bytes = None
                                     if msg.photo:
                                         print_info(f"    Загрузка изображения из сообщения {msg.id}...")
                                         photo_bytes = await client.download_media(msg.photo, file=bytes)
-                                        if photo_bytes:
-                                            bucket_name = 'events'
-                                            current_date = datetime.now().strftime('%Y-%m-%d')
-                                            file_path = f"{current_date}/{entity.id}/{msg.id}.jpg"
-                                            storage_url = f"{config['supabase_url']}/storage/v1/object/{bucket_name}/{file_path}"
-                                            storage_headers = {
-                                                'apikey': config['supabase_key'],
-                                                'Authorization': f"Bearer {config['supabase_key']}",
-                                                'Content-Type': 'image/jpeg'
-                                            }
-                                            
-                                            try:
-                                                upload_response = await http_client.put(storage_url, headers=storage_headers, content=photo_bytes)
-                                                upload_response.raise_for_status()
-                                                image_url = f"{config['supabase_url']}/storage/v1/object/public/{bucket_name}/{file_path}"
-                                                print_success(f"    Изображение успешно загружено: {image_url}")
-                                            except Exception as e:
-                                                print_error(f"    Ошибка загрузки изображения: {e}")
+                                    else:
+                                        print_info(f"    Изображение отсутствует, генерируем через Gemini...")
+                                        img_prompt = msg.text if msg.text else "Интересное мероприятие"
+                                        photo_bytes = await generate_image_with_gemini(img_prompt, config.get('gemini_api_key'), http_client)
+                                        
+                                    if photo_bytes:
+                                        bucket_name = 'events'
+                                        current_date = datetime.now().strftime('%Y-%m-%d')
+                                        file_path = f"{current_date}/{entity.id}/{msg.id}.jpg"
+                                        storage_url = f"{config['supabase_url']}/storage/v1/object/{bucket_name}/{file_path}"
+                                        storage_headers = {
+                                            'apikey': config['supabase_key'],
+                                            'Authorization': f"Bearer {config['supabase_key']}",
+                                            'Content-Type': 'image/jpeg'
+                                        }
+                                        
+                                        try:
+                                            upload_response = await http_client.put(storage_url, headers=storage_headers, content=photo_bytes)
+                                            upload_response.raise_for_status()
+                                            image_url = f"{config['supabase_url']}/storage/v1/object/public/{bucket_name}/{file_path}"
+                                            print_success(f"    Изображение успешно {'загружено' if msg.photo else 'сгенерировано'}: {image_url}")
+                                        except Exception as e:
+                                            print_error(f"    Ошибка загрузки изображения: {e}")
 
                                     if hasattr(entity, 'username') and entity.username:
                                         base_link = f"https://t.me/{entity.username}"
