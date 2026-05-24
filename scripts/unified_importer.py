@@ -315,11 +315,11 @@ async def generate_image_with_gemini(prompt: str, api_key: str, http_client: htt
         if not safe_prompt:
             return None
             
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-ultra-generate-001:predict?key={api_key}"
         
         payload = {
             "instances": [
-                {"prompt": f"Photorealistic high-quality image for an event: {safe_prompt}. If there is any text on the image, it MUST be in Russian language."}
+                {"prompt": f"Cinematic, high-quality photorealistic image for an event: {safe_prompt}. Minimalistic design. Any text shown on the image MUST be in clear, meaningful Russian language only. Avoid garbled or meaningless characters."}
             ],
             "parameters": {
                 "sampleCount": 1,
