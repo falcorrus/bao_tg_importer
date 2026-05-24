@@ -18,6 +18,8 @@ import argparse
 from typing import Optional
 import logging
 import subprocess
+from io import BytesIO
+from PIL import Image
 
 from telethon.tl.functions.channels import GetForumTopicsRequest
 from telethon.tl.types import InputChannel
@@ -65,8 +67,8 @@ def print_error(message):
 def print_info(message):
     logger.info(f"ℹ️  {message}")
 
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types as genai_types
 
 # --- Конфигурация и загрузка ---
 def load_config():
@@ -343,6 +345,44 @@ async def generate_image_with_gemini(prompt: str, api_key: str, http_client: htt
         
     return None
 
+
+def compress_image_bytes(image_bytes: bytes, max_size_kb: int = 500, min_quality: int = 40) -> bytes:
+    """Сжимает изображение до указанного лимита размера (в КБ)."""
+    max_size_bytes = max_size_kb * 1024
+    if len(image_bytes) <= max_size_bytes:
+        return image_bytes
+
+    img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    quality = 85
+
+    # Сначала пробуем снизить качество JPEG
+    while quality >= min_quality:
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        result = buffer.getvalue()
+        if len(result) <= max_size_bytes:
+            print_info(f"    Изображение сжато до {len(result)//1024}КБ (quality={quality})")
+            return result
+        quality -= 10
+
+    # Если качество не помогло — уменьшаем разрешение
+    scale = 0.8
+    while scale >= 0.3:
+        new_w = int(img.width * scale)
+        new_h = int(img.height * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        buffer = BytesIO()
+        resized.save(buffer, format="JPEG", quality=min_quality, optimize=True)
+        result = buffer.getvalue()
+        if len(result) <= max_size_bytes:
+            print_info(f"    Изображение сжато до {len(result)//1024}КБ (scale={scale:.1f})")
+            return result
+        scale -= 0.1
+
+    print_info(f"    Изображение сжато до минимума: {len(result)//1024}КБ")
+    return result
+
+
 def clean_markdown_html(text: str) -> str:
     """Очищает текст от Markdown и HTML тегов."""
     if not text:
@@ -463,7 +503,7 @@ async def check_event_exists_in_db(http_client, config, title, when_day, headers
 # --- Взаимодействие с Gemini ---
 async def process_message_with_gemini(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
     """
-    Анализирует сообщение с помощью Google Gemini, классифицирует его и извлекает JSON.
+    Анализирует сообщение с помощью Google Gemini (google.genai SDK), классифицирует его и извлекает JSON.
     """
     if not prompt_template:
         print_error("Шаблон промпта не загружен.")
@@ -474,45 +514,40 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
 
     # Форматируем дату сообщения для контекста
     context_date_str = message_date.strftime('%Y-%m-%d (%A)')
-    
+
     # Добавляем контекст даты перед контентом сообщения
     full_prompt_content = f"CURRENT CONTEXT DATE (Post Date): {context_date_str}\n\nMESSAGE CONTENT:\n{normalized_content}"
-    
-    # Configure Gemini
-    genai.configure(api_key=config['gemini_api_key'])
-    
+
     model_name = config.get('gemini_model', 'gemini-2.0-flash')
     print_info(f"  Использование модели Gemini: {model_name}")
-    
-    generation_config = {
-        "temperature": 0.1,
-        "top_p": 0.95,
-        "top_k": 40,
-        "max_output_tokens": 8192,
-        "response_mime_type": "application/json",
-    }
-    
-    model = genai.GenerativeModel(
-        model_name=config['gemini_model'],
-        generation_config=generation_config,
-        system_instruction=prompt_template
+
+    client = genai.Client(api_key=config['gemini_api_key'])
+
+    generate_config = genai_types.GenerateContentConfig(
+        temperature=0.1,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        response_mime_type="application/json",
+        system_instruction=prompt_template,
     )
-    
+
     max_retries = 5
     base_delay = 2  # seconds
-    
+
     for attempt in range(max_retries):
         try:
             print_info(f"  Отправка запроса в Gemini (попытка {attempt + 1})...")
-            # Run in executor to not block asyncio loop since genai is synchronous
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: model.generate_content(full_prompt_content))
-            
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=full_prompt_content,
+                config=generate_config,
+            )
+
             try:
                 json_data = json.loads(response.text)
                 print_success("  Gemini вернула валидный JSON.")
-                # Much smaller delay for paid tier
-                await asyncio.sleep(0.5) 
+                await asyncio.sleep(0.5)
                 return json_data
             except json.JSONDecodeError as e:
                 print_error(f"  Ошибка парсинга JSON от Gemini: {e}")
@@ -521,7 +556,7 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
             except Exception as e:
                 print_error(f"  Ошибка обработки ответа Gemini: {e}")
                 return None
-                
+
         except Exception as e:
             error_str = str(e)
             if "429" in error_str:
@@ -531,7 +566,7 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
             else:
                 print_error(f"  Ошибка запроса к Gemini: {e}")
                 return None
-    
+
     print_error("  Не удалось получить ответ от Gemini после нескольких попыток.")
     return None
 
@@ -774,24 +809,50 @@ async def import_single_link(link: str):
 
                 image_url = None
                 photo_bytes = None
+                template_url = "https://nvodtxeehqnreyjuijsl.supabase.co/storage/v1/object/public/icons//event_gemini.jpeg"
+
+                # 1. Пытаемся получить оригинальное медиа (фото или превью видео)
+                media_to_download = None
                 if msg.photo:
-                    print_info(f"    Загрузка изображения...")
-                    photo_bytes = await client.download_media(msg.photo, file=bytes)
-                else:
-                    print_info(f"    Изображение отсутствует, генерируем через Gemini...")
+                    media_to_download = msg.photo
+                elif msg.video:
+                    if hasattr(msg.video, 'thumbs') and msg.video.thumbs:
+                        media_to_download = msg.video.thumbs[-1]
+                    # Если у видео нет превью, media_to_download остается None -> переход к генерации
+
+                if media_to_download:
+                    try:
+                        print_info(f"    Загрузка медиа из сообщения {msg.id}...")
+                        photo_bytes = await client.download_media(media_to_download, file=bytes)
+                        if not photo_bytes:
+                            print_info("    Медиа скачалось пустым.")
+                    except Exception as e:
+                        print_error(f"    Ошибка загрузки медиа: {e}")
+                        photo_bytes = None
+
+                # 2. Если нет фото или это видео без превью — генерируем через Gemini
+                if not photo_bytes:
+                    print_info(f"    Изображение отсутствует или не удалось загрузить, генерируем через Gemini...")
                     img_prompt = msg.text if msg.text else "Интересное мероприятие"
                     photo_bytes = await generate_image_with_gemini(img_prompt, config.get('gemini_api_key'), http_client)
 
+                # 3. Если есть байты — сжимаем и загружаем в Storage
                 if photo_bytes:
-                    file_path = f"{datetime.now().strftime('%Y-%m-%d')}/{entity.id}/{msg.id}.jpg"
-                    storage_url = f"{config['supabase_url']}/storage/v1/object/events/{file_path}"
                     try:
+                        photo_bytes = compress_image_bytes(photo_bytes, max_size_kb=500)
+                        file_path = f"{datetime.now().strftime('%Y-%m-%d')}/{entity.id}/{msg.id}.jpg"
+                        storage_url = f"{config['supabase_url']}/storage/v1/object/events/{file_path}"
                         up_resp = await http_client.put(storage_url, headers={**headers, 'Content-Type': 'image/jpeg'}, content=photo_bytes)
                         up_resp.raise_for_status()
                         image_url = f"{config['supabase_url']}/storage/v1/object/public/events/{file_path}"
-                        if not msg.photo:
-                            print_success(f"    Изображение успешно сгенерировано и загружено: {image_url}")
-                    except Exception as e: print_error(f"Ошибка загрузки фото: {e}")
+                        print_success(f"    Изображение {'загружено' if msg.photo or msg.video else 'сгенерировано'} и сохранено: {image_url}")
+                    except Exception as e:
+                        print_error(f"    Ошибка обработки/загрузки фото: {e}")
+                        image_url = template_url
+                else:
+                    # 4. Если всё еще нет фото (даже после генерации) — используем шаблон
+                    print_info(f"    Использование шаблонного изображения.")
+                    image_url = template_url
 
                 cleaned_text = clean_markdown_html(msg.text)
                 final_post_data = {
@@ -1073,32 +1134,56 @@ async def import_and_process_messages():
 
                                     image_url = None
                                     photo_bytes = None
+                                    template_url = "https://nvodtxeehqnreyjuijsl.supabase.co/storage/v1/object/public/icons//event_gemini.jpeg"
+
+                                    # 1. Пытаемся получить оригинальное медиа (фото или превью видео)
+                                    media_to_download = None
                                     if msg.photo:
-                                        print_info(f"    Загрузка изображения из сообщения {msg.id}...")
-                                        photo_bytes = await client.download_media(msg.photo, file=bytes)
-                                    else:
-                                        print_info(f"    Изображение отсутствует, генерируем через Gemini...")
+                                        media_to_download = msg.photo
+                                    elif msg.video:
+                                        if hasattr(msg.video, 'thumbs') and msg.video.thumbs:
+                                            media_to_download = msg.video.thumbs[-1]
+                                    # Если у видео нет превью, media_to_download остается None -> переход к генерации
+
+                                    if media_to_download:
+                                        try:
+                                            print_info(f"    Загрузка медиа из сообщения {msg.id}...")
+                                            photo_bytes = await client.download_media(media_to_download, file=bytes)
+                                        except Exception as e:
+                                            print_error(f"    Ошибка загрузки медиа: {e}")
+                                            photo_bytes = None
+
+                                    # 2. Если нет фото или это видео без превью — генерируем через Gemini
+                                    if not photo_bytes:
+                                        print_info(f"    Изображение отсутствует или не удалось загрузить, генерируем через Gemini...")
                                         img_prompt = msg.text if msg.text else "Интересное мероприятие"
                                         photo_bytes = await generate_image_with_gemini(img_prompt, config.get('gemini_api_key'), http_client)
-                                        
+
+                                    # 3. Если есть байты — сжимаем и загружаем в Storage
                                     if photo_bytes:
-                                        bucket_name = 'events'
-                                        current_date = datetime.now().strftime('%Y-%m-%d')
-                                        file_path = f"{current_date}/{entity.id}/{msg.id}.jpg"
-                                        storage_url = f"{config['supabase_url']}/storage/v1/object/{bucket_name}/{file_path}"
-                                        storage_headers = {
-                                            'apikey': config['supabase_key'],
-                                            'Authorization': f"Bearer {config['supabase_key']}",
-                                            'Content-Type': 'image/jpeg'
-                                        }
-                                        
                                         try:
+                                            photo_bytes = compress_image_bytes(photo_bytes, max_size_kb=500)
+                                            bucket_name = 'events'
+                                            current_date = datetime.now().strftime('%Y-%m-%d')
+                                            file_path = f"{current_date}/{entity.id}/{msg.id}.jpg"
+                                            storage_url = f"{config['supabase_url']}/storage/v1/object/{bucket_name}/{file_path}"
+                                            storage_headers = {
+                                                'apikey': config['supabase_key'],
+                                                'Authorization': f"Bearer {config['supabase_key']}",
+                                                'Content-Type': 'image/jpeg'
+                                            }
+                                            
                                             upload_response = await http_client.put(storage_url, headers=storage_headers, content=photo_bytes)
                                             upload_response.raise_for_status()
                                             image_url = f"{config['supabase_url']}/storage/v1/object/public/{bucket_name}/{file_path}"
-                                            print_success(f"    Изображение успешно {'загружено' if msg.photo else 'сгенерировано'}: {image_url}")
+                                            print_success(f"    Изображение {'загружено' if msg.photo or msg.video else 'сгенерировано'} и сохранено: {image_url}")
                                         except Exception as e:
-                                            print_error(f"    Ошибка загрузки изображения: {e}")
+                                            print_error(f"    Ошибка обработки/загрузки изображения: {e}")
+                                            image_url = template_url
+                                    else:
+                                        # 4. Если всё еще нет фото — используем шаблон
+                                        print_info(f"    Использование шаблонного изображения.")
+                                        image_url = template_url
 
                                     if hasattr(entity, 'username') and entity.username:
                                         base_link = f"https://t.me/{entity.username}"

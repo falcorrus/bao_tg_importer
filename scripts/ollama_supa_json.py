@@ -246,6 +246,7 @@ async def update_posts_with_ollama_json():
                     updated_count += 1
 
                     # Подготавливаем для вставки в events
+                    template_url = "https://nvodtxeehqnreyjuijsl.supabase.co/storage/v1/object/public/icons//event_gemini.jpeg"
                     event_for_sync = {
                         **first_event,
                         'channel_name': post.get('channel_name'),
@@ -255,6 +256,7 @@ async def update_posts_with_ollama_json():
                         'posted_at': post.get('posted_at'),
                         'post_link': post.get('post_link'),
                         'city': post.get('city'),
+                        'image': post.get('image') or template_url,
                         'isAuto': True,
                         'author': '666408b4-1566-447b-a36c-0e36c9ebc96d'
                     }
@@ -284,6 +286,7 @@ async def update_posts_with_ollama_json():
                     print_info(f"  Найдено дополнительных дат: {len(extracted_events) - 1}. Создание новых записей в posts...")
                     
                     additional_posts = []
+                    template_url = "https://nvodtxeehqnreyjuijsl.supabase.co/storage/v1/object/public/icons//event_gemini.jpeg"
                     for extra_event in extracted_events[1:]:
                         extra_clean = sanitize_data(extra_event)
                         new_post = {
@@ -294,7 +297,7 @@ async def update_posts_with_ollama_json():
                             'posted_at': post.get('posted_at'),
                             'post_link': post.get('post_link'),
                             'raw_channel_id': post.get('raw_channel_id'),
-                            'image': post.get('image'),
+                            'image': post.get('image') or template_url,
                             'city': post.get('city'),
                             'is_event_filtered': post.get('is_event_filtered', True)
                         }
