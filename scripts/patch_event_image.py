@@ -40,7 +40,7 @@ def load_config():
 
 # ── Генерация изображения ──────────────────────────────────────────────────────
 async def generate_image(prompt: str, api_key: str, client: httpx.AsyncClient) -> bytes | None:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-ultra-generate-001:predict?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-fast-generate-001:predict?key={api_key}"
     payload = {
         "instances": [{"prompt": f"Cinematic, high-quality photorealistic image for an event: {prompt[:800]}. Minimalistic design. Any text shown on the image MUST be in clear, meaningful Russian language only. Avoid garbled or meaningless characters."}],
         "parameters": {"sampleCount": 1, "aspectRatio": "1:1"}

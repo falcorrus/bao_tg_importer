@@ -315,7 +315,7 @@ async def generate_image_with_gemini(prompt: str, api_key: str, http_client: htt
         if not safe_prompt:
             return None
             
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-ultra-generate-001:predict?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-fast-generate-001:predict?key={api_key}"
         
         payload = {
             "instances": [
