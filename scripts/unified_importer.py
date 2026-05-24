@@ -319,7 +319,7 @@ async def generate_image_with_gemini(prompt: str, api_key: str, http_client: htt
         
         payload = {
             "instances": [
-                {"prompt": f"Photorealistic high-quality image for an event: {safe_prompt}"}
+                {"prompt": f"Photorealistic high-quality image for an event: {safe_prompt}. If there is any text on the image, it MUST be in Russian language."}
             ],
             "parameters": {
                 "sampleCount": 1,
