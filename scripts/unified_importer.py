@@ -137,6 +137,12 @@ def load_config():
         print_error("TELEGRAM_API_ID должен быть числом")
         return None
 
+    # Логирование маскированных ключей для отладки
+    if config['use_openrouter'] and config['openrouter_api_key']:
+        key_len = len(config['openrouter_api_key'])
+        masked_key = config['openrouter_api_key'][:13] + "..." + config['openrouter_api_key'][-4:] if key_len > 15 else "invalid"
+        print_info(f"Загружен OpenRouter API-ключ: {masked_key}")
+
     return config
 
 def load_ollama_prompt():
