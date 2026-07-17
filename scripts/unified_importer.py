@@ -14,6 +14,7 @@ import base64
 from datetime import datetime
 import httpx
 import sys
+import time
 import argparse
 from typing import Optional
 import logging
@@ -228,6 +229,46 @@ def send_event_notification(event):
         msg += f"\n📝 <b>Описание:</b>\n<i>{description}</i>"
         
     send_telegram_notification(msg, prefix="🎉 <b>Добавлено новое событие!</b>")
+
+def check_cooldown() -> bool:
+    """Проверяет, находится ли скрипт в режиме cooldown после ошибки (15 минут)"""
+    try:
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        cooldown_file = os.path.join(log_dir, 'last_error.timestamp')
+        if os.path.exists(cooldown_file):
+            with open(cooldown_file, 'r') as f:
+                ts = float(f.read().strip())
+            elapsed = time.time() - ts
+            if elapsed < 900: # 15 минут
+                remaining = int((900 - elapsed) / 60)
+                print_info(f"⏳ Пропуск запуска: режим cooldown после ошибки. Осталось {remaining} мин.")
+                return True
+    except Exception as e:
+        print_error(f"Ошибка при проверке cooldown: {e}")
+    return False
+
+def save_error_cooldown():
+    """Записывает время ошибки для активации cooldown"""
+    try:
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        cooldown_file = os.path.join(log_dir, 'last_error.timestamp')
+        with open(cooldown_file, 'w') as f:
+            f.write(str(time.time()))
+        print_info("⏳ Cooldown активирован на 15 минут.")
+    except Exception as e:
+        print_error(f"Не удалось записать cooldown: {e}")
+
+def clear_cooldown():
+    """Сбрасывает режим cooldown при успешном выполнении"""
+    try:
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        cooldown_file = os.path.join(log_dir, 'last_error.timestamp')
+        if os.path.exists(cooldown_file):
+            os.remove(cooldown_file)
+            print_info("⏳ Cooldown сброшен.")
+    except Exception as e:
+        pass
 
 def check_persistent_429():
     """Проверяет лог на наличие ошибок 429 в течение последних 2 часов"""
@@ -1178,7 +1219,8 @@ async def import_and_process_messages():
                             
                             if ollama_data is None:
                                 print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка: LLM не вернула результат.")
-                                break # Прекращаем обработку этого топика, чтобы не "проглотить" сообщения
+                                save_error_cooldown()
+                                return None # Прекращаем всю обработку и возвращаем None
 
                             total_messages_processed += 1
                             max_id_overall = max(max_id_overall, msg.id)
@@ -1448,6 +1490,7 @@ async def import_and_process_messages():
                 'events_imported': total_events_imported,
                 'timestamp': datetime.now().isoformat()
             }
+            clear_cooldown() # Сбрасываем cooldown
             return result
     
     except Exception as e:
@@ -1478,6 +1521,10 @@ def main():
         print_info(f"Запуск импорта по ссылке: {args.link}")
         result = asyncio.run(import_single_link(args.link))
     else:
+        # Проверяем cooldown после ошибок (15 минут) для автозапусков
+        if check_cooldown():
+            sys.exit(0)
+            
         # По умолчанию запускаем полный импорт
         try:
             result = asyncio.run(import_and_process_messages())
