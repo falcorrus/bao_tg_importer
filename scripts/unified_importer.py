@@ -234,11 +234,12 @@ def check_cooldown() -> bool:
     """Проверяет, находится ли скрипт в режиме cooldown после ошибки (15 минут)"""
     try:
         log_dir = os.path.join(os.path.dirname(__file__), 'logs')
-        cooldown_file = os.path.join(log_dir, 'last_error.timestamp')
+        cooldown_file = os.path.join(log_dir, 'last_error.json')
         if os.path.exists(cooldown_file):
-            with open(cooldown_file, 'r') as f:
-                ts = float(f.read().strip())
-            elapsed = time.time() - ts
+            with open(cooldown_file, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            last_error_time = state.get('last_error_time', 0.0)
+            elapsed = time.time() - last_error_time
             if elapsed < 900: # 15 минут
                 remaining = int((900 - elapsed) / 60)
                 print_info(f"⏳ Пропуск запуска: режим cooldown после ошибки. Осталось {remaining} мин.")
@@ -248,25 +249,66 @@ def check_cooldown() -> bool:
     return False
 
 def save_error_cooldown():
-    """Записывает время ошибки для активации cooldown"""
+    """Записывает ошибку, обновляет счетчик и возвращает (should_notify, error_count, first_error_time)"""
     try:
         log_dir = os.path.join(os.path.dirname(__file__), 'logs')
         os.makedirs(log_dir, exist_ok=True)
-        cooldown_file = os.path.join(log_dir, 'last_error.timestamp')
-        with open(cooldown_file, 'w') as f:
-            f.write(str(time.time()))
-        print_info("⏳ Cooldown активирован на 15 минут.")
+        cooldown_file = os.path.join(log_dir, 'last_error.json')
+        
+        now = time.time()
+        state = {
+            "first_error_time": now,
+            "last_error_time": now,
+            "last_notified_time": 0.0,
+            "error_count": 0
+        }
+        
+        if os.path.exists(cooldown_file):
+            try:
+                with open(cooldown_file, 'r', encoding='utf-8') as f:
+                    old_state = json.load(f)
+                    if isinstance(old_state, dict):
+                        state = old_state
+            except Exception:
+                pass
+                
+        state["error_count"] += 1
+        state["last_error_time"] = now
+        if state.get("first_error_time", 0.0) == 0.0 or state["error_count"] == 1:
+            state["first_error_time"] = now
+            
+        # Уведомляем при первой ошибке и затем каждые 2 часа (7200 сек)
+        should_notify = False
+        if state["error_count"] == 1:
+            should_notify = True
+        elif now - state.get("last_notified_time", 0.0) >= 7200:
+            should_notify = True
+            
+        if should_notify:
+            state["last_notified_time"] = now
+            
+        with open(cooldown_file, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+            
+        print_info(f"⏳ Ошибка зафиксирована. Счетчик ошибок: {state['error_count']}. Cooldown 15 мин.")
+        return should_notify, state["error_count"], state["first_error_time"]
     except Exception as e:
         print_error(f"Не удалось записать cooldown: {e}")
+        return True, 1, time.time()
 
 def clear_cooldown():
-    """Сбрасывает режим cooldown при успешном выполнении"""
+    """Сбрасывает режим cooldown и счетчик ошибок при успешном выполнении"""
     try:
         log_dir = os.path.join(os.path.dirname(__file__), 'logs')
-        cooldown_file = os.path.join(log_dir, 'last_error.timestamp')
+        cooldown_file = os.path.join(log_dir, 'last_error.json')
         if os.path.exists(cooldown_file):
             os.remove(cooldown_file)
-            print_info("⏳ Cooldown сброшен.")
+            print_info("⏳ Cooldown и счетчик ошибок сброшены.")
+            
+        # Удаляем старый файл last_error.timestamp, если он остался
+        old_file = os.path.join(log_dir, 'last_error.timestamp')
+        if os.path.exists(old_file):
+            os.remove(old_file)
     except Exception as e:
         pass
 
@@ -640,12 +682,10 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
             else:
                 err_msg = f"Ошибка запроса к Gemini: {e}"
                 print_error(f"  {err_msg}")
-                send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer Gemini Error</b>")
                 return None
 
     err_msg = "Не удалось получить ответ от Gemini после всех попыток."
     print_error(f"  {err_msg}")
-    send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer Gemini Error</b>")
     return None
 
 async def process_message_with_ollama(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
@@ -741,15 +781,12 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
         "response_format": {"type": "json_object"}
     }
 
-    async def handle_fallback_or_return_none(err_message: str, notification_prefix: Optional[str] = None):
-        """Вспомогательная функция для переключения на резервную модель или отправки уведомления"""
+    async def handle_fallback_or_return_none(err_message: str):
+        """Вспомогательная функция для переключения на резервную модель или завершения с ошибкой"""
         if model != fallback_model:
             print_info(f"  ⚠️ Ошибка модели {model} на OpenRouter: {err_message}. Пробуем резервную {fallback_model} (fallback)...")
             return await process_message_with_openrouter(content, config, prompt_template, message_date, target_model=fallback_model)
-        else:
-            if notification_prefix:
-                send_telegram_notification(err_message, prefix=notification_prefix)
-            return None
+        return None
 
     async with httpx.AsyncClient() as client:
         max_retries = 3
@@ -774,7 +811,7 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                     else:
                         err_msg = f"OpenRouter лимит (429) превышен для модели {model}."
                         print_error(f"  🛑 {err_msg}")
-                        return await handle_fallback_or_return_none(err_msg, "⚠️ <b>BAO Importer OpenRouter Limit</b>")
+                        return await handle_fallback_or_return_none(err_msg)
 
                 if response.status_code != 200:
                     err_text = response.text
@@ -792,7 +829,7 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                         send_telegram_notification(full_err, prefix="🚨 <b>BAO Importer Auth Error</b>")
                         return None
                         
-                    return await handle_fallback_or_return_none(full_err, "🚨 <b>BAO Importer OpenRouter Error</b>")
+                    return await handle_fallback_or_return_none(full_err)
 
                 response.raise_for_status()
                 result = response.json()
@@ -813,17 +850,17 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                         err_msg = f"Ошибка парсинга JSON от OpenRouter ({model}): {e}"
                         print_error(f"  {err_msg}")
                         print_error(f"  Полученный ответ: {result['choices'][0]['message']['content']}")
-                        return await handle_fallback_or_return_none(err_msg, "🚨 <b>BAO Importer Parse Error</b>")
+                        return await handle_fallback_or_return_none(err_msg)
                 else:
                     err_msg = f"Неожиданный ответ от OpenRouter ({model}): {result}"
                     print_error(f"  {err_msg}")
-                    return await handle_fallback_or_return_none(err_msg, "🚨 <b>BAO Importer Unexpected Response</b>")
+                    return await handle_fallback_or_return_none(err_msg)
                 
             except Exception as e:
                 print_error(f"  Ошибка при работе с OpenRouter ({model}): {e}")
                 if attempt == max_retries - 1:
                     err_msg = f"Ошибка сети OpenRouter ({model}) после всех попыток: {e}"
-                    return await handle_fallback_or_return_none(err_msg, "🚨 <b>BAO Importer Connection Error</b>")
+                    return await handle_fallback_or_return_none(err_msg)
         
         return None
 
@@ -1219,7 +1256,16 @@ async def import_and_process_messages():
                             
                             if ollama_data is None:
                                 print_error(f"  🛑 Пропуск сообщения {msg.id} и остановка: LLM не вернула результат.")
-                                save_error_cooldown()
+                                should_notify, err_count, first_err_time = save_error_cooldown()
+                                if should_notify:
+                                    first_err_date = datetime.fromtimestamp(first_err_time).strftime('%Y-%m-%d %H:%M')
+                                    err_msg = (
+                                        f"Сбой при обработке сообщения {msg.id} в канале {channel_name}.\n"
+                                        f"Интерфейс LLM не вернул результат.\n\n"
+                                        f"⏱ <b>Первый сбой:</b> {first_err_date}\n"
+                                        f"🔄 <b>Повторений подряд:</b> {err_count}"
+                                    )
+                                    send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer LLM Error</b>")
                                 return None # Прекращаем всю обработку и возвращаем None
 
                             total_messages_processed += 1
