@@ -837,6 +837,8 @@ async def import_single_link(link: str):
             # Обработка через LLM
             if config.get('use_ollama'):
                 ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
+            elif config.get('use_openrouter'):
+                ollama_data = await process_message_with_openrouter(msg.text, config, prompt_template, msg.date)
             else:
                 ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
                 if ollama_data is None:
