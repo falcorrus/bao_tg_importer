@@ -104,7 +104,7 @@ def load_config():
         'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma4:e4b'),
         'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
         'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', '').strip(),
-        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-4-26b-a4b-it:free'),
+        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'meta-llama/llama-3.3-70b-instruct:free'),
         'use_openrouter': os.getenv('USE_OPENROUTER', 'false').lower() == 'true',
         'check_interval': 300  # 5 минут
     }
@@ -591,10 +591,14 @@ async def process_message_with_gemini(content: str, config: dict, prompt_templat
                 print_info(f"  ⚠️ Лимит (429). Ждем {delay} сек...")
                 await asyncio.sleep(delay)
             else:
-                print_error(f"  Ошибка запроса к Gemini: {e}")
+                err_msg = f"Ошибка запроса к Gemini: {e}"
+                print_error(f"  {err_msg}")
+                send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer Gemini Error</b>")
                 return None
 
-    print_error("  Не удалось получить ответ от Gemini после нескольких попыток.")
+    err_msg = "Не удалось получить ответ от Gemini после всех попыток."
+    print_error(f"  {err_msg}")
+    send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer Gemini Error</b>")
     return None
 
 async def process_message_with_ollama(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
@@ -710,8 +714,23 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                         await asyncio.sleep(wait_time)
                         continue
                     else:
-                        print_error("  🛑 OpenRouter лимит (429) превышен после всех попыток.")
+                        err_msg = "OpenRouter лимит (429) превышен после всех попыток."
+                        print_error(f"  🛑 {err_msg}")
+                        send_telegram_notification(err_msg, prefix="⚠️ <b>BAO Importer OpenRouter Limit</b>")
                         return None
+
+                if response.status_code != 200:
+                    err_text = response.text
+                    try:
+                        err_json = response.json()
+                        err_msg = err_json.get('error', {}).get('message', err_text)
+                    except Exception:
+                        err_msg = err_text
+                    
+                    full_err = f"Ошибка OpenRouter {response.status_code}: {err_msg}"
+                    print_error(f"  {full_err}")
+                    send_telegram_notification(full_err, prefix="🚨 <b>BAO Importer OpenRouter Error</b>")
+                    return None
 
                 response.raise_for_status()
                 result = response.json()
@@ -731,15 +750,21 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                         await asyncio.sleep(1)
                         return data
                     except (json.JSONDecodeError, KeyError) as e:
-                        print_error(f"  Ошибка парсинга JSON от OpenRouter: {e}")
+                        err_msg = f"Ошибка парсинга JSON от OpenRouter: {e}"
+                        print_error(f"  {err_msg}")
                         print_error(f"  Полученный ответ: {result['choices'][0]['message']['content']}")
+                        send_telegram_notification(f"{err_msg}\nОтвет: {result['choices'][0]['message']['content'][:200]}...", prefix="🚨 <b>BAO Importer Parse Error</b>")
                         return None
                 else:
-                    print_error(f"  Неожиданный ответ от OpenRouter: {result}")
+                    err_msg = f"Неожиданный ответ от OpenRouter: {result}"
+                    print_error(f"  {err_msg}")
+                    send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer Unexpected Response</b>")
                     return None
                 
             except Exception as e:
                 print_error(f"  Ошибка при работе с OpenRouter: {e}")
+                if attempt == max_retries - 1:
+                    send_telegram_notification(f"Ошибка сети OpenRouter после всех попыток: {e}", prefix="🚨 <b>BAO Importer Connection Error</b>")
                 return None
         
         return None
