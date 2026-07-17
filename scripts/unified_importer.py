@@ -153,7 +153,7 @@ def load_ollama_prompt():
 import requests
 
 # --- Уведомления в Telegram ---
-def send_telegram_notification(message):
+def send_telegram_notification(message, prefix="🤖 <b>BAO Importer Alert</b>"):
     """Отправляет уведомление в Telegram через бота из secrets.json"""
     try:
         secrets_path = os.path.expanduser('~/.gemini/configs/secrets.json')
@@ -182,9 +182,11 @@ def send_telegram_notification(message):
             
         for cid in chat_ids:
             if not cid: continue
+            
+            text_content = f"{prefix}\n\n{message}" if prefix else message
             payload = {
                 "chat_id": cid,
-                "text": f"🤖 <b>BAO Importer Alert</b>\n\n{message}",
+                "text": text_content,
                 "parse_mode": "HTML"
             }
             try:
@@ -195,6 +197,31 @@ def send_telegram_notification(message):
     except Exception as e:
         if logger:
             logger.error(f"Ошибка отправки уведомления в TG: {e}")
+
+def send_event_notification(event):
+    """Отправляет красивое уведомление о новом событии в Telegram через bao_bot"""
+    title = event.get('title', 'Без названия')
+    when_day = event.get('whenDay', 'Дата не указана')
+    when_time = event.get('whenTime', '')
+    description = event.get('description', '')
+    link = event.get('link_site') or event.get('post_link') or event.get('link_contact') or ''
+    
+    # Ограничиваем описание для Telegram
+    if len(description) > 400:
+        description = description[:400] + "..."
+        
+    time_str = f" в {when_time}" if when_time else ""
+    
+    msg = (
+        f"📅 <b>Название:</b> {title}\n"
+        f"📆 <b>Когда:</b> {when_day}{time_str}\n"
+    )
+    if link:
+        msg += f"🔗 <b>Ссылка:</b> <a href='{link}'>Источник / Чат</a>\n"
+    if description:
+        msg += f"\n📝 <b>Описание:</b>\n<i>{description}</i>"
+        
+    send_telegram_notification(msg, prefix="🎉 <b>Добавлено новое событие!</b>")
 
 def check_persistent_429():
     """Проверяет лог на наличие ошибок 429 в течение последних 2 часов"""
@@ -895,7 +922,12 @@ async def import_single_link(link: str):
                         
                     event_entry = filter_fields(event_entry, ALLOWED_EVENT_FIELDS)
                     resp = await http_client.post(f"{config['supabase_url']}/rest/v1/events", headers=headers, json=event_entry)
-                    if resp.status_code < 300: total_events_imported += 1
+                    if resp.status_code < 300:
+                        total_events_imported += 1
+                        try:
+                            send_event_notification(event_entry)
+                        except Exception as ex:
+                            print_error(f"Ошибка отправки уведомления для события {event_entry.get('title')}: {ex}")
                 
                 return {'status': 'success', 'events_imported': total_events_imported}
             
@@ -1335,6 +1367,12 @@ async def import_and_process_messages():
                                                 print_error(f"  ОШИБКА 'events': {resp.status_code} - {resp.text}")
                                             else:
                                                 print_success(f"  Успешно вставлено {len(ev_batch)} записей в таблицу 'events'.")
+                                                # Отправляем уведомления о новых событиях
+                                                for ev in ev_batch:
+                                                    try:
+                                                        send_event_notification(ev)
+                                                    except Exception as ex:
+                                                        print_error(f"Ошибка отправки уведомления для события {ev.get('title')}: {ex}")
 
                                 posts_to_insert = []
                             except Exception as e:
