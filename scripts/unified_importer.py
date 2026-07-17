@@ -656,7 +656,7 @@ async def process_message_with_ollama(content: str, config: dict, prompt_templat
             print_error(f"  Ошибка при работе с Ollama: {e}")
             return None
 
-async def process_message_with_openrouter(content: str, config: dict, prompt_template: str, message_date: datetime) -> Optional[dict]:
+async def process_message_with_openrouter(content: str, config: dict, prompt_template: str, message_date: datetime, target_model: Optional[str] = None) -> Optional[dict]:
     """
     Анализирует сообщение с помощью OpenRouter, классифицирует его и извлекает JSON.
     """
@@ -675,7 +675,8 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
     
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     api_key = config.get('openrouter_api_key')
-    model = config.get('openrouter_model', 'google/gemma-4-26b-a4b-it:free')
+    model = target_model or config.get('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free')
+    fallback_model = "google/gemma-4-26b-a4b-it:free"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -692,6 +693,16 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
         ],
         "response_format": {"type": "json_object"}
     }
+
+    async def handle_fallback_or_return_none(err_message: str, notification_prefix: Optional[str] = None):
+        """Вспомогательная функция для переключения на резервную модель или отправки уведомления"""
+        if model != fallback_model:
+            print_info(f"  ⚠️ Ошибка модели {model} на OpenRouter: {err_message}. Пробуем резервную {fallback_model} (fallback)...")
+            return await process_message_with_openrouter(content, config, prompt_template, message_date, target_model=fallback_model)
+        else:
+            if notification_prefix:
+                send_telegram_notification(err_message, prefix=notification_prefix)
+            return None
 
     async with httpx.AsyncClient() as client:
         max_retries = 3
@@ -714,10 +725,9 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                         await asyncio.sleep(wait_time)
                         continue
                     else:
-                        err_msg = "OpenRouter лимит (429) превышен после всех попыток."
+                        err_msg = f"OpenRouter лимит (429) превышен для модели {model}."
                         print_error(f"  🛑 {err_msg}")
-                        send_telegram_notification(err_msg, prefix="⚠️ <b>BAO Importer OpenRouter Limit</b>")
-                        return None
+                        return await handle_fallback_or_return_none(err_msg, "⚠️ <b>BAO Importer OpenRouter Limit</b>")
 
                 if response.status_code != 200:
                     err_text = response.text
@@ -727,10 +737,15 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                     except Exception:
                         err_msg = err_text
                     
-                    full_err = f"Ошибка OpenRouter {response.status_code}: {err_msg}"
+                    full_err = f"Ошибка OpenRouter {response.status_code} для модели {model}: {err_msg}"
                     print_error(f"  {full_err}")
-                    send_telegram_notification(full_err, prefix="🚨 <b>BAO Importer OpenRouter Error</b>")
-                    return None
+                    
+                    # Если это ошибка авторизации 401, уведомляем сразу без fallback (ошибка ключа)
+                    if response.status_code == 401:
+                        send_telegram_notification(full_err, prefix="🚨 <b>BAO Importer Auth Error</b>")
+                        return None
+                        
+                    return await handle_fallback_or_return_none(full_err, "🚨 <b>BAO Importer OpenRouter Error</b>")
 
                 response.raise_for_status()
                 result = response.json()
@@ -738,7 +753,6 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                 if "choices" in result and len(result["choices"]) > 0:
                     try:
                         content_str = result["choices"][0]["message"]["content"]
-                        # OpenRouter иногда возвращает JSON в markdown блоках
                         if "```json" in content_str:
                             content_str = content_str.split("```json")[1].split("```")[0].strip()
                         elif "```" in content_str:
@@ -746,26 +760,23 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
                         
                         data = json.loads(content_str)
                         print_success("  OpenRouter вернула валидный JSON.")
-                        # Небольшая пауза после успеха, чтобы не спамить бесплатный API
                         await asyncio.sleep(1)
                         return data
                     except (json.JSONDecodeError, KeyError) as e:
-                        err_msg = f"Ошибка парсинга JSON от OpenRouter: {e}"
+                        err_msg = f"Ошибка парсинга JSON от OpenRouter ({model}): {e}"
                         print_error(f"  {err_msg}")
                         print_error(f"  Полученный ответ: {result['choices'][0]['message']['content']}")
-                        send_telegram_notification(f"{err_msg}\nОтвет: {result['choices'][0]['message']['content'][:200]}...", prefix="🚨 <b>BAO Importer Parse Error</b>")
-                        return None
+                        return await handle_fallback_or_return_none(err_msg, "🚨 <b>BAO Importer Parse Error</b>")
                 else:
-                    err_msg = f"Неожиданный ответ от OpenRouter: {result}"
+                    err_msg = f"Неожиданный ответ от OpenRouter ({model}): {result}"
                     print_error(f"  {err_msg}")
-                    send_telegram_notification(err_msg, prefix="🚨 <b>BAO Importer Unexpected Response</b>")
-                    return None
+                    return await handle_fallback_or_return_none(err_msg, "🚨 <b>BAO Importer Unexpected Response</b>")
                 
             except Exception as e:
-                print_error(f"  Ошибка при работе с OpenRouter: {e}")
+                print_error(f"  Ошибка при работе с OpenRouter ({model}): {e}")
                 if attempt == max_retries - 1:
-                    send_telegram_notification(f"Ошибка сети OpenRouter после всех попыток: {e}", prefix="🚨 <b>BAO Importer Connection Error</b>")
-                return None
+                    err_msg = f"Ошибка сети OpenRouter ({model}) после всех попыток: {e}"
+                    return await handle_fallback_or_return_none(err_msg, "🚨 <b>BAO Importer Connection Error</b>")
         
         return None
 
