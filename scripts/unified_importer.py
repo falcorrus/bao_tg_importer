@@ -105,7 +105,7 @@ def load_config():
         'ollama_model': os.getenv('OLLAMA_MODEL', 'gemma4:e4b'),
         'use_ollama': os.getenv('USE_OLLAMA', 'false').lower() == 'true',
         'openrouter_api_key': os.getenv('OPENROUTER_API_KEY', '').strip(),
-        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'meta-llama/llama-3.3-70b-instruct:free'),
+        'openrouter_model': os.getenv('OPENROUTER_MODEL', 'google/gemma-4-26b-a4b-it:free'),
         'use_openrouter': os.getenv('USE_OPENROUTER', 'false').lower() == 'true',
         'check_interval': 300  # 5 минут
     }
@@ -160,7 +160,7 @@ def load_ollama_prompt():
 import requests
 
 # --- Уведомления в Telegram ---
-def send_telegram_notification(message, prefix="🤖 <b>BAO Importer Alert</b>"):
+def send_telegram_notification(message, prefix="🤖 <b>BAO Importer Alert</b>", chat_id=None):
     """Отправляет уведомление в Telegram через бота из secrets.json"""
     try:
         secrets_path = os.path.expanduser('~/.gemini/configs/secrets.json')
@@ -180,7 +180,7 @@ def send_telegram_notification(message, prefix="🤖 <b>BAO Importer Alert</b>")
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         
         # Получаем список chat_id (может быть строкой, числом или списком)
-        raw_chat_id = tg_config.get('chat_id')
+        raw_chat_id = chat_id if chat_id is not None else tg_config.get('chat_id')
         chat_ids = []
         if isinstance(raw_chat_id, list):
             chat_ids = raw_chat_id
@@ -228,7 +228,8 @@ def send_event_notification(event):
     if description:
         msg += f"\n📝 <b>Описание:</b>\n<i>{description}</i>"
         
-    send_telegram_notification(msg, prefix="🎉 <b>Добавлено новое событие!</b>")
+    # Перенаправляем уведомления о событиях в личку 5643575848 и канал @floripaevents
+    send_telegram_notification(msg, prefix="🎉 <b>Добавлено новое событие!</b>", chat_id=["5643575848", "@floripaevents"])
 
 def check_cooldown() -> bool:
     """Проверяет, находится ли скрипт в режиме cooldown после ошибки (15 минут)"""
@@ -762,8 +763,8 @@ async def process_message_with_openrouter(content: str, config: dict, prompt_tem
     
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     api_key = config.get('openrouter_api_key')
-    model = target_model or config.get('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free')
-    fallback_model = "google/gemma-4-26b-a4b-it:free"
+    model = target_model or config.get('openrouter_model', 'google/gemma-4-26b-a4b-it:free')
+    fallback_model = "nvidia/nemotron-3-nano-30b-a3b:free"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
