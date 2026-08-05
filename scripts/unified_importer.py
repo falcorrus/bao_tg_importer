@@ -228,8 +228,8 @@ def send_event_notification(event):
     if description:
         msg += f"\n📝 <b>Описание:</b>\n<i>{description}</i>"
         
-    # Перенаправляем уведомления о событиях в личку 5643575848 и канал @floripaevents
-    send_telegram_notification(msg, prefix="🎉 <b>Добавлено новое событие!</b>", chat_id=["5643575848", "@floripaevents"])
+    # Отправляем уведомления о событиях исключительно в канал @floripaevents
+    send_telegram_notification(msg, prefix="🎉 <b>Добавлено новое событие!</b>", chat_id="@floripaevents")
 
 def check_cooldown() -> bool:
     """Проверяет, находится ли скрипт в режиме cooldown после ошибки (15 минут)"""
