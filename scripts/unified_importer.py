@@ -210,11 +210,11 @@ def is_floripa_event(event) -> bool:
     if not isinstance(event, dict):
         return False
 
-    # 1. Явная проверка поля города (если есть)
+    # 1. Явная проверка поля города (в БД Supabase: City 3 = Florianópolis, City 1 = Buenos Aires)
     city_val = str(event.get('city') or event.get('City') or '').lower().strip()
-    if city_val in ['1', 'floripa', 'florianópolis', 'florianopolis', 'fln']:
+    if city_val in ['3', 'floripa', 'florianópolis', 'florianopolis', 'fln']:
         return True
-    if city_val in ['2', 'buenos aires', 'ba', 'moscow', 'москва']:
+    if city_val in ['1', '2', 'buenos aires', 'ba', 'moscow', 'москва']:
         return False
 
     # 2. Проверка валюты (ARS, RUB - не Флорипа)
