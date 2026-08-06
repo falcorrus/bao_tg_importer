@@ -205,8 +205,69 @@ def send_telegram_notification(message, prefix="🤖 <b>BAO Importer Alert</b>",
         if logger:
             logger.error(f"Ошибка отправки уведомления в TG: {e}")
 
+def is_floripa_event(event) -> bool:
+    """Проверяет, относится ли событие к Флорианополису (Floripa / SC)"""
+    if not isinstance(event, dict):
+        return False
+
+    # 1. Явная проверка поля города (если есть)
+    city_val = str(event.get('city') or event.get('City') or '').lower().strip()
+    if city_val in ['1', 'floripa', 'florianópolis', 'florianopolis', 'fln']:
+        return True
+    if city_val in ['2', 'buenos aires', 'ba', 'moscow', 'москва']:
+        return False
+
+    # 2. Проверка валюты (ARS, RUB - не Флорипа)
+    currency = str(event.get('currency') or '').upper().strip()
+    if currency in ['ARS', 'RUB']:
+        return False
+
+    # Сбор текста для анализа
+    combined_text = " ".join([
+        str(event.get('title') or ''),
+        str(event.get('description') or ''),
+        str(event.get('where') or ''),
+        str(event.get('link_map') or ''),
+        str(event.get('link_site') or ''),
+        str(event.get('post_link') or ''),
+        str(event.get('link_contact') or ''),
+        str(event.get('channel_name') or '')
+    ]).lower()
+
+    # 3. Позитивные триггеры
+    floripa_keywords = [
+        'floripa', 'florianópolis', 'florianopolis', 'флорипа', 'флорианополис', 'флорианополисе',
+        'campeche', 'кампеше', 'canasvieiras', 'канашвьерас', 'канашьерас', 'канасвьерас',
+        'lagoa da conceição', 'lagoa da conceicao', 'lagoa', 'лагоа', 'jurere', 'журере', 'jurerê',
+        'trindade', 'триндаде', 'ingleses', 'инглесес', 'barra da lagoa', 'барра да лагоа',
+        'pantanal', 'пантанал', 'itacorubi', 'итакоруби', 'santa catarina', 'санта катарина',
+        'санта-катарина', 'sc, brasil', 'sc - brasil', 'sc, brazil', 'sc - brazil',
+        'event_floripa', 'helpinfloripa', 'floripaevents'
+    ]
+
+    for kw in floripa_keywords:
+        if kw in combined_text:
+            return True
+
+    # 4. Негативные триггеры (Аргентина, Россия и др.)
+    non_floripa_keywords = [
+        'buenos aires', 'буэнос-айрес', 'буэнос айрес', 'palermo', 'палермо', 'recoleta', 'реколета',
+        'san telmo', 'сан тельмо', 'belgrano', 'бельграно', 'argentina', 'аргентина',
+        'москва', 'санкт-петербург', 'спб', 'сочи', 'бали'
+    ]
+    for nkw in non_floripa_keywords:
+        if nkw in combined_text:
+            return False
+
+    return False
+
 def send_event_notification(event):
-    """Отправляет красивое уведомление о новом событии в Telegram через bao_bot"""
+    """Отправляет красивое уведомление о новом событии в Telegram через bao_bot только для Флорипы"""
+    if not is_floripa_event(event):
+        if logger:
+            logger.info(f"Пропуск публикации события (не относится к Флорипе): {event.get('title')}")
+        return
+
     title = event.get('title', 'Без названия')
     when_day = event.get('whenDay', 'Дата не указана')
     when_time = event.get('whenTime', '')
