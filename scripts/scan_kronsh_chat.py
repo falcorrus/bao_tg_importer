@@ -252,23 +252,21 @@ async def main():
             print("💤 ИИ не обнаружил важных договоренностей или идей в новых сообщениях.")
         else:
             print("🔥 Обнаружены важные договоренности! Добавление в лог...")
+            # Дописываем выжимку ИИ прямо в файл сырого лога
+            with open(RAW_CHAT_LOG_PATH, "a", encoding="utf-8") as raw_log:
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                raw_log.write(f"\n> 💡 **Выжимка важных договоренностей от {today_str}:**\n")
+                # Добавляем отступы blockquote к каждой строке выжимки
+                indented_response = "\n".join(f"> {line}" for line in llm_response.split("\n"))
+                raw_log.write(f"{indented_response}\n\n")
+            print(f"📝 Выжимка успешно добавлена в {RAW_CHAT_LOG_PATH}")
             
-            # Дописываем в конец файла !Docs/Партнёры.md
-            if os.path.exists(PARTNERS_DOC_PATH):
-                with open(PARTNERS_DOC_PATH, "a", encoding="utf-8") as f:
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    f.write(f"\n\n### Автоматический лог переписки от {today_str}\n")
-                    f.write(f"{llm_response}\n")
-                print(f"📝 Данные успешно записаны в {PARTNERS_DOC_PATH}")
-                
-                # Запускаем садовника для обновления Obsidian локально
-                try:
-                    print("🌳 Запуск садовника для синхронизации с Obsidian...")
-                    os.system("python3 /Users/eugene/.gemini/commands/garden_updater.py")
-                except Exception as e:
-                    print(f"⚠️ Ошибка при запуске садовника: {e}")
-            else:
-                print(f"❌ Ошибка: Файл {PARTNERS_DOC_PATH} не найден!")
+            # Запускаем садовника для обновления Obsidian локально
+            try:
+                print("🌳 Запуск садовника для синхронизации с Obsidian...")
+                os.system("python3 /Users/eugene/.gemini/commands/garden_updater.py")
+            except Exception as e:
+                print(f"⚠️ Ошибка при запуске садовника: {e}")
 
         # Обновляем состояние последнего обработанного ID
         with open(STATE_FILE_PATH, "w") as f:
