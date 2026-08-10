@@ -14,7 +14,7 @@ import httpx
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 ENV_PATH = os.path.join(PARENT_DIR, ".env")
-PARTNERS_DOC_PATH = "/Users/eugene/MyProjects/floripaguru/!Docs/partners.md"
+PARTNERS_DOC_PATH = "/Users/eugene/MyProjects/floripaguru/!Docs/Floripa_vendors_partners.md"
 LOGS_DIR = "/Users/eugene/MyProjects/floripaguru/!Docs/Logs"
 RAW_CHAT_LOG_PATH = os.path.join(LOGS_DIR, "kronsht_chat_log.md")
 STATE_FILE_PATH = os.path.join(BASE_DIR, "scan_state.json")
