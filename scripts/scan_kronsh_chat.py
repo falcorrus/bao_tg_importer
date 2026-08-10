@@ -15,6 +15,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 ENV_PATH = os.path.join(PARENT_DIR, ".env")
 PARTNERS_DOC_PATH = "/Users/eugene/MyProjects/floripaguru/!Docs/partners.md"
+LOGS_DIR = "/Users/eugene/MyProjects/floripaguru/!Docs/Logs"
+RAW_CHAT_LOG_PATH = os.path.join(LOGS_DIR, "kronsht_chat_log.md")
 STATE_FILE_PATH = os.path.join(BASE_DIR, "scan_state.json")
 
 # Загружаем переменные окружения вручную
@@ -224,6 +226,24 @@ async def main():
         
         chat_text = "\n".join(chat_lines)
         print(f"📊 Собрано {len(messages)} новых сообщений для анализа.")
+
+        # Записываем сырой лог общения в kronsht_chat_log.md
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        is_new_log_file = not os.path.exists(RAW_CHAT_LOG_PATH)
+        
+        with open(RAW_CHAT_LOG_PATH, "a", encoding="utf-8") as raw_log:
+            if is_new_log_file:
+                raw_log.write("# Полный лог переписки с Иваном Кроншем (@kronsht)\n\n")
+                raw_log.write("Этот файл содержит полную историю переписки в Telegram, выгружаемую автоматически.\n\n")
+                raw_log.write("---\n\n")
+            
+            for msg in messages:
+                sender = "Иван Кронш" if msg.sender_id == entity.id else "Я"
+                time_str = msg.date.strftime("%Y-%m-%d %H:%M:%S")
+                # Форматируем переносы строк для списков в Markdown
+                formatted_text = msg.text.replace("\n", "\n  ")
+                raw_log.write(f"* **{sender}** ({time_str}): {formatted_text}\n")
+        print(f"📝 Полный сырой лог сохранен в {RAW_CHAT_LOG_PATH}")
 
         # Вызываем LLM для анализа
         llm_response = await call_llm(chat_text)
