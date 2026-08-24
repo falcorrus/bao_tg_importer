@@ -22,7 +22,7 @@ import subprocess
 from io import BytesIO
 from PIL import Image
 
-from telethon.tl.functions.channels import GetForumTopicsRequest
+from telethon.tl.functions.messages import GetForumTopicsRequest
 from telethon.tl.types import InputChannel
 from urllib.parse import quote
 
@@ -375,7 +375,7 @@ def clear_cooldown():
         pass
 
 def check_persistent_429():
-    """Проверяет лог на наличие ошибок 429 в течение последних 2 часов"""
+    """Проверяет лог на наличие затяжных критических ошибок Gemini и отказов fallback за последние 2 часа"""
     try:
         log_dir = os.path.join(os.path.dirname(__file__), 'logs')
         log_file = os.path.join(log_dir, 'importer.log')
@@ -387,36 +387,45 @@ def check_persistent_429():
             lines = proc.stdout.read().decode('utf-8').splitlines()
 
         current_time = datetime.now()
-        errors_429 = []
+        gemini_failures = []
+        fallback_failures = []
 
         for line in lines:
-            if "Лимит (429)" in line or "error 429" in line.lower():
+            line_lower = line.lower()
+            # Проверяем, не удалось ли Gemini ответить после всех ретраев
+            is_gemini_fail = "не удалось получить ответ от gemini после всех попыток" in line_lower
+            # Проверяем, не привело ли это к пропуску сообщений/сбою (т.е. fallback тоже не сработал)
+            is_fallback_fail = "llm не вернула результат" in line_lower or "выполнение завершилось с ошибкой" in line_lower
+
+            if is_gemini_fail or is_fallback_fail:
                 # Извлекаем дату (формат 2026-04-23 22:36:51,642)
                 match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', line)
                 if match:
                     error_time = datetime.strptime(match.group(1), '%Y-%m-%d %H:%M:%S')
-                    # Если ошибка была в последние 2 часа
+                    # Если событие произошло в последние 2 часа
                     if (current_time - error_time).total_seconds() < 7200:
-                        errors_429.append(error_time)
+                        if is_gemini_fail:
+                            gemini_failures.append(error_time)
+                        if is_fallback_fail:
+                            fallback_failures.append(error_time)
 
-        if not errors_429:
-            return
+        # Отправляем алерт, только если Gemini полностью легла И fallback-модели тоже не справились
+        if gemini_failures and fallback_failures:
+            # Проверяем, не отправляли ли мы уже уведомление недавно (чтобы не спамить)
+            flag_file = os.path.join(log_dir, 'notification_sent.flag')
+            if os.path.exists(flag_file):
+                last_sent = datetime.fromtimestamp(os.path.getmtime(flag_file))
+                if (current_time - last_sent).total_seconds() < 14400: # 4 часа
+                    return
 
-        # Если ошибок много и они распределены по времени (минимум 1.5 часа разницы между первой и последней)
-        if len(errors_429) > 10:
-            time_diff = (max(errors_429) - min(errors_429)).total_seconds()
-            if time_diff > 5400: # 1.5 часа
-                # Проверяем, не отправляли ли мы уже уведомление недавно (чтобы не спамить)
-                # Это можно сделать через временный файл-флаг
-                flag_file = os.path.join(log_dir, 'notification_sent.flag')
-                if os.path.exists(flag_file):
-                    last_sent = datetime.fromtimestamp(os.path.getmtime(flag_file))
-                    if (current_time - last_sent).total_seconds() < 14400: # 4 часа
-                        return
-
-                send_telegram_notification(f"⚠️ Ошибки лимитов Gemini (429) продолжаются более 2 часов.\nПоследняя ошибка: {max(errors_429)}")
-                with open(flag_file, 'w') as f:
-                    f.write(current_time.isoformat())
+            send_telegram_notification(
+                f"⚠️ Ошибки лимитов Gemini (429) привели к сбою импорта.\n"
+                f"Критические сбои Gemini: {len(gemini_failures)} раз(а).\n"
+                f"Пропущено сообщений: {len(fallback_failures)} раз(а).\n"
+                f"Последний сбой: {max(fallback_failures or gemini_failures)}"
+            )
+            with open(flag_file, 'w') as f:
+                f.write(current_time.isoformat())
     except Exception as e:
         if logger:
             logger.error(f"Ошибка проверки 429: {e}")
@@ -493,7 +502,7 @@ async def generate_image_with_gemini(prompt: str, api_key: str, http_client: htt
         if not safe_prompt:
             return None
             
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-fast-generate-001:predict?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key={api_key}"
         
         payload = {
             "instances": [
@@ -615,7 +624,7 @@ def normalize_text(text: str) -> str:
 
 # --- Whitelists for Supabase Tables ---
 ALLOWED_EVENT_FIELDS = {
-    'id', 'created_at', 'image', 'title', 'title_dop', 'description', 
+     'created_at', 'image', 'title', 'title_dop', 'description', 
     'whenDay', 'whenTime', 'link_site', 'price', 'where', 'author', 
     'link_map', 'link_contact', 'isAvailable', 'city', 'currency', 
     'isPriceFrom', 'category', 'isAuto', 'isOnline', 'author_username', 
@@ -623,7 +632,7 @@ ALLOWED_EVENT_FIELDS = {
 }
 
 ALLOWED_POST_FIELDS = {
-    'id', 'channel_name', 'message_id', 'content', 'posted_at', 
+     'channel_name', 'message_id', 'content', 'posted_at', 
     'is_event_filtered', 'is_event', 'post_link', 'raw_channel_id', 
     'image_url', 'created_at', 'image', 'title', 'title_dop', 
     'description', 'whenDay', 'whenTime', 'link_site', 'price', 
@@ -998,7 +1007,11 @@ async def import_single_link(link: str):
                 ollama_data = await process_message_with_openrouter(msg.text, config, prompt_template, msg.date)
             else:
                 ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
+                if ollama_data is None and config.get('openrouter_api_key'):
+                    print_info("  ⚠️ Gemini не сработала. Пробуем OpenRouter (fallback)...")
+                    ollama_data = await process_message_with_openrouter(msg.text, config, prompt_template, msg.date)
                 if ollama_data is None:
+                    print_info("  ⚠️ Gemini/OpenRouter не сработали. Пробуем локальный Ollama (fallback)...")
                     ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
 
             if not ollama_data:
@@ -1092,7 +1105,9 @@ async def import_single_link(link: str):
                 for p in posts_to_insert:
                     if p.get('city') != 1:
                         p_log = filter_fields(p, ALLOWED_POST_FIELDS)
-                        await http_client.post(f"{config['supabase_url']}/rest/v1/posts", headers=headers, json=p_log)
+                        resp_post = await http_client.post(f"{config['supabase_url']}/rest/v1/posts", headers=headers, json=p_log)
+                        if resp_post.status_code not in [200, 201, 204]:
+                            print_error(f"  ОШИБКА вставки posts в single_link: {resp_post.status_code} - {resp_post.text}")
                     
                     event_entry = p.copy()
                     event_entry['isAuto'] = True
@@ -1311,9 +1326,14 @@ async def import_and_process_messages():
                                 # Основной: Gemini
                                 ollama_data = await process_message_with_gemini(msg.text, config, prompt_template, msg.date)
                                 
-                                # Fallback на локальный Ollama, если Gemini не вернула результат
+                                # Fallback на OpenRouter, если Gemini не вернула результат
+                                if ollama_data is None and config.get('openrouter_api_key'):
+                                    print_info("  ⚠️ Gemini не сработала. Пробуем OpenRouter (fallback)...")
+                                    ollama_data = await process_message_with_openrouter(msg.text, config, prompt_template, msg.date)
+                                
+                                # Fallback на локальный Ollama, если OpenRouter тоже не вернул результат (или не настроен)
                                 if ollama_data is None:
-                                    print_info("  ⚠️ Gemini не сработала. Пробуем локальный Ollama (fallback)...")
+                                    print_info("  ⚠️ Gemini/OpenRouter не сработали. Пробуем локальный Ollama (fallback)...")
                                     ollama_data = await process_message_with_ollama(msg.text, config, prompt_template, msg.date)
                             
                             if ollama_data is None:
@@ -1332,6 +1352,9 @@ async def import_and_process_messages():
 
                             total_messages_processed += 1
                             max_id_overall = max(max_id_overall, msg.id)
+                            
+                            # Пауза для соблюдения лимитов бесплатного API Gemini (15 RPM)
+                            await asyncio.sleep(4.0)
 
                             # --- Поддержка массива объектов или одиночного объекта ---
                             results_to_process = []
@@ -1488,6 +1511,8 @@ async def import_and_process_messages():
                                                     if k not in d: d[k] = None
 
                                             resp = await http_client.post(f"{config['supabase_url']}/rest/v1/posts", headers=headers, json=batch)
+                                            if resp.status_code not in [200, 201, 204]:
+                                                print_error(f"  ОШИБКА 'posts': {resp.status_code} - {resp.text}")
                                             resp.raise_for_status()
                                     print_success(f"  Успешно вставлено {len(posts_for_log)} записей в таблицу 'posts'.")
                                 else:
@@ -1576,7 +1601,7 @@ async def import_and_process_messages():
                     if max_id_overall > last_id:
                         print_info(f"  Обновление last_processed_message_id на {max_id_overall}...")
                         update_response = await http_client.patch(
-                            f"{config['supabase_url']}/rest/v1/channel_sync_state?channel_name=eq.{channel.get('channel_name')}",
+                            f"{config['supabase_url']}/rest/v1/channel_sync_state?id=eq.{channel.get('id')}",
                             headers=headers,
                             json={'last_processed_message_id': max_id_overall}
                         )
